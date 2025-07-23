@@ -1,3 +1,4 @@
+#define _GNU_SOURCE  // Para pthread_timedjoin_np
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -5,6 +6,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <string.h>
+#include <errno.h>  // Para ETIMEDOUT
 
 // ========== CÓDIGOS ANSI PARA CORES ==========
 #define RESET       "\033[0m"
@@ -93,6 +95,7 @@ typedef struct {
     int alerta_critico;
     int crashed;
     pthread_t thread;
+    int thread_ativa; // Flag para indicar se a thread está ativa
 } aviao_t;
 
 // recursos do aeroporto
@@ -133,6 +136,7 @@ double tempo_decorrido(time_t inicio);
 const char* obter_cor_por_operacao(const char* msg);
 const char* obter_cor_tipo_aviao(tipo_voo_t tipo);
 void imprimir_cabecalho();
+void forcar_finalizacao_threads(); // Nova função
 
 int main() {
     imprimir_cabecalho();
@@ -160,16 +164,65 @@ int main() {
     pthread_join(thread_criador, NULL);
     pthread_join(thread_monitor, NULL);
     
-    // Aguarda todas as threads de aviões terminarem
+    // Força a finalização das threads bloqueadas
+    forcar_finalizacao_threads();
+    
+    // Aguarda todas as threads de aviões terminarem com timeout
     for (int i = 0; i < contador_avioes; i++) {
-        if (avioes[i].estado != CRASHED) {
-            pthread_join(avioes[i].thread, NULL);
+        if (avioes[i].thread_ativa && avioes[i].estado != CRASHED) {
+            // Tenta aguardar a thread por 5 segundos
+            void* retval;
+            struct timespec timeout;
+            if (clock_gettime(CLOCK_REALTIME, &timeout) == 0) {
+                timeout.tv_sec += 5; // 5 segundos de timeout
+                
+                int result = pthread_timedjoin_np(avioes[i].thread, &retval, &timeout);
+                if (result == ETIMEDOUT) {
+                    printf(COR_ALERTA "⚠ Thread do avião %d não finalizou a tempo - forçando cancelamento" RESET "\n", avioes[i].id);
+                    pthread_cancel(avioes[i].thread);
+                    pthread_join(avioes[i].thread, NULL); // Aguarda o cancelamento
+                }
+            } else {
+                // Se clock_gettime falhar, usa join normal
+                pthread_join(avioes[i].thread, NULL);
+            }
         }
     }
+    
     finalizar_recursos();
     
     printf(COR_TITULO "═══ SIMULAÇÃO FINALIZADA COM SUCESSO ═══" RESET "\n");
     return 0;
+}
+
+void forcar_finalizacao_threads() {
+    printf(COR_TITULO "═══ FORÇANDO LIBERAÇÃO DE RECURSOS PARA FINALIZAÇÃO ═══" RESET "\n");
+    
+    // Libera todos os semáforos para desbloquear threads em espera
+    int pistas_disponiveis, portoes_disponiveis, torre_disponivel;
+    
+    // Verifica quantos recursos estão disponíveis
+    sem_getvalue(&sem_pistas, &pistas_disponiveis);
+    sem_getvalue(&sem_portoes, &portoes_disponiveis);
+    sem_getvalue(&sem_torre, &torre_disponivel);
+    
+    // Libera recursos suficientes para desbloquear todas as threads
+    for (int i = 0; i < (NUM_PISTAS - pistas_disponiveis + 10); i++) {
+        sem_post(&sem_pistas);
+    }
+    
+    for (int i = 0; i < (NUM_PORTOES - portoes_disponiveis + 10); i++) {
+        sem_post(&sem_portoes);
+    }
+    
+    for (int i = 0; i < (MAX_TORRE_OPERACOES - torre_disponivel + 10); i++) {
+        sem_post(&sem_torre);
+    }
+    
+    printf(COR_SUCESSO "✓ Recursos liberados para permitir finalização das threads" RESET "\n");
+    
+    // Aguarda um pouco para as threads processarem
+    sleep(2);
 }
 
 void imprimir_cabecalho() {
@@ -220,10 +273,12 @@ void criar_avioes() {
         novo_aviao->tempo_inicio_espera = time(NULL);
         novo_aviao->alerta_critico = 0;
         novo_aviao->crashed = 0;
+        novo_aviao->thread_ativa = 1; // Marca thread como ativa
         
         int result = pthread_create(&novo_aviao->thread, NULL, aviao_thread, (void*)novo_aviao);
         if (result != 0) {
             printf(RED "✗ Erro ao criar thread do avião %d" RESET "\n", novo_aviao->id);
+            novo_aviao->thread_ativa = 0;
             pthread_mutex_unlock(&mutex_aviao);
             continue;
         }
@@ -266,23 +321,47 @@ void* aviao_thread(void* arg) {
         sleep(1); // Pequena pausa
     }
     
+    // Se a simulação terminou, força finalização
+    if (!simulacao_ativa && aviao->estado != FINALIZADO && aviao->estado != CRASHED) {
+        aviao->estado = FINALIZADO;
+        imprimir_status("FORÇADO A FINALIZAR - FIM DA SIMULAÇÃO", aviao);
+    }
+    
+    aviao->thread_ativa = 0; // Marca thread como inativa
     return NULL;
 }
 
 void pouso(aviao_t* aviao) {
+    // Verifica se simulação ainda está ativa antes de solicitar recursos
+    if (!simulacao_ativa) {
+        aviao->estado = FINALIZADO;
+        return;
+    }
+    
     imprimir_status(" SOLICITANDO RECURSOS PARA POUSO", aviao);
     
     if (aviao->tipo == VOO_INTERNACIONAL) {
         // Voo internacional: Pista → Torre
         imprimir_status(" Aguardando PISTA (prioridade internacional)", aviao);
-        sem_wait(&sem_pistas);
+        if (sem_wait(&sem_pistas) != 0 || !simulacao_ativa) {
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         pistas_em_uso++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" PISTA ADQUIRIDA", aviao);
         
         imprimir_status(" Aguardando TORRE DE CONTROLE", aviao);
-        sem_wait(&sem_torre);
+        if (sem_wait(&sem_torre) != 0 || !simulacao_ativa) {
+            // Libera a pista antes de finalizar
+            pthread_mutex_lock(&mutex_estatisticas);
+            pistas_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_pistas);
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         torre_operacoes_ativas++;
         pthread_mutex_unlock(&mutex_estatisticas);
@@ -290,18 +369,41 @@ void pouso(aviao_t* aviao) {
     } else {
         // Voo doméstico: Torre → Pista
         imprimir_status(" Aguardando TORRE DE CONTROLE", aviao);
-        sem_wait(&sem_torre);
+        if (sem_wait(&sem_torre) != 0 || !simulacao_ativa) {
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         torre_operacoes_ativas++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" TORRE ADQUIRIDA", aviao);
         
         imprimir_status(" Aguardando PISTA", aviao);
-        sem_wait(&sem_pistas);
+        if (sem_wait(&sem_pistas) != 0 || !simulacao_ativa) {
+            // Libera a torre antes de finalizar
+            pthread_mutex_lock(&mutex_estatisticas);
+            torre_operacoes_ativas--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_torre);
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         pistas_em_uso++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" PISTA ADQUIRIDA", aviao);
+    }
+    
+    if (!simulacao_ativa) {
+        // Libera recursos e finaliza
+        pthread_mutex_lock(&mutex_estatisticas);
+        pistas_em_uso--;
+        torre_operacoes_ativas--;
+        pthread_mutex_unlock(&mutex_estatisticas);
+        sem_post(&sem_pistas);
+        sem_post(&sem_torre);
+        aviao->estado = FINALIZADO;
+        return;
     }
     
     aviao->estado = POUSANDO;
@@ -322,26 +424,39 @@ void pouso(aviao_t* aviao) {
     imprimir_status_recursos(" PISTA e TORRE LIBERADAS", aviao);
     
     aviao->estado = ESPERANDO_DESEMBARQUE;
-    pthread_mutex_lock(&mutex_estatisticas);
-    pthread_mutex_unlock(&mutex_estatisticas);
-    
     imprimir_status(" POUSO CONCLUÍDO COM SUCESSO", aviao);
 }
 
 void desembarque(aviao_t* aviao) {
+    if (!simulacao_ativa) {
+        aviao->estado = FINALIZADO;
+        return;
+    }
+    
     imprimir_status(" SOLICITANDO RECURSOS PARA DESEMBARQUE", aviao);
     
     if (aviao->tipo == VOO_INTERNACIONAL) {
         // Voo internacional: Portão → Torre
         imprimir_status(" Aguardando PORTÃO DE EMBARQUE (prioridade internacional)", aviao);
-        sem_wait(&sem_portoes);
+        if (sem_wait(&sem_portoes) != 0 || !simulacao_ativa) {
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         portoes_em_uso++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" PORTÃO ADQUIRIDO", aviao);
         
         imprimir_status(" Aguardando TORRE DE CONTROLE", aviao);
-        sem_wait(&sem_torre);
+        if (sem_wait(&sem_torre) != 0 || !simulacao_ativa) {
+            // Libera o portão antes de finalizar
+            pthread_mutex_lock(&mutex_estatisticas);
+            portoes_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_portoes);
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         torre_operacoes_ativas++;
         pthread_mutex_unlock(&mutex_estatisticas);
@@ -349,18 +464,41 @@ void desembarque(aviao_t* aviao) {
     } else {
         // Voo doméstico: Torre → Portão
         imprimir_status(" Aguardando TORRE DE CONTROLE", aviao);
-        sem_wait(&sem_torre);
+        if (sem_wait(&sem_torre) != 0 || !simulacao_ativa) {
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         torre_operacoes_ativas++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" TORRE ADQUIRIDA", aviao);
         
         imprimir_status(" Aguardando PORTÃO DE EMBARQUE", aviao);
-        sem_wait(&sem_portoes);
+        if (sem_wait(&sem_portoes) != 0 || !simulacao_ativa) {
+            // Libera a torre antes de finalizar
+            pthread_mutex_lock(&mutex_estatisticas);
+            torre_operacoes_ativas--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_torre);
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         portoes_em_uso++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" PORTÃO ADQUIRIDO", aviao);
+    }
+    
+    if (!simulacao_ativa) {
+        // Libera recursos e finaliza
+        pthread_mutex_lock(&mutex_estatisticas);
+        portoes_em_uso--;
+        torre_operacoes_ativas--;
+        pthread_mutex_unlock(&mutex_estatisticas);
+        sem_post(&sem_portoes);
+        sem_post(&sem_torre);
+        aviao->estado = FINALIZADO;
+        return;
     }
     
     aviao->estado = DESEMBARCANDO;
@@ -383,19 +521,47 @@ void desembarque(aviao_t* aviao) {
 }
 
 void decolagem(aviao_t* aviao) {
+    if (!simulacao_ativa) {
+        // Libera o portão que ainda está em uso
+        pthread_mutex_lock(&mutex_estatisticas);
+        portoes_em_uso--;
+        pthread_mutex_unlock(&mutex_estatisticas);
+        sem_post(&sem_portoes);
+        aviao->estado = FINALIZADO;
+        return;
+    }
+    
     imprimir_status(" SOLICITANDO RECURSOS PARA DECOLAGEM", aviao);
     
     if (aviao->tipo == VOO_INTERNACIONAL) {
         // Voo internacional: Pista → Torre (portão já ocupado)
         imprimir_status(" Aguardando PISTA (prioridade internacional)", aviao);
-        sem_wait(&sem_pistas);
+        if (sem_wait(&sem_pistas) != 0 || !simulacao_ativa) {
+            // Libera o portão antes de finalizar
+            pthread_mutex_lock(&mutex_estatisticas);
+            portoes_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_portoes);
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         pistas_em_uso++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" PISTA ADQUIRIDA", aviao);
         
         imprimir_status(" Aguardando TORRE DE CONTROLE", aviao);
-        sem_wait(&sem_torre);
+        if (sem_wait(&sem_torre) != 0 || !simulacao_ativa) {
+            // Libera pista e portão antes de finalizar
+            pthread_mutex_lock(&mutex_estatisticas);
+            pistas_em_uso--;
+            portoes_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_pistas);
+            sem_post(&sem_portoes);
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         torre_operacoes_ativas++;
         pthread_mutex_unlock(&mutex_estatisticas);
@@ -403,18 +569,50 @@ void decolagem(aviao_t* aviao) {
     } else {
         // Voo doméstico: Torre → Pista (portão já ocupado)
         imprimir_status(" Aguardando TORRE DE CONTROLE", aviao);
-        sem_wait(&sem_torre);
+        if (sem_wait(&sem_torre) != 0 || !simulacao_ativa) {
+            // Libera o portão antes de finalizar
+            pthread_mutex_lock(&mutex_estatisticas);
+            portoes_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_portoes);
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         torre_operacoes_ativas++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" TORRE ADQUIRIDA", aviao);
         
         imprimir_status(" Aguardando PISTA", aviao);
-        sem_wait(&sem_pistas);
+        if (sem_wait(&sem_pistas) != 0 || !simulacao_ativa) {
+            // Libera torre e portão antes de finalizar
+            pthread_mutex_lock(&mutex_estatisticas);
+            torre_operacoes_ativas--;
+            portoes_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_torre);
+            sem_post(&sem_portoes);
+            aviao->estado = FINALIZADO;
+            return;
+        }
         pthread_mutex_lock(&mutex_estatisticas);
         pistas_em_uso++;
         pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status_recursos(" PISTA ADQUIRIDA", aviao);
+    }
+    
+    if (!simulacao_ativa) {
+        // Libera todos os recursos e finaliza
+        pthread_mutex_lock(&mutex_estatisticas);
+        portoes_em_uso--;
+        pistas_em_uso--;
+        torre_operacoes_ativas--;
+        pthread_mutex_unlock(&mutex_estatisticas);
+        sem_post(&sem_portoes);
+        sem_post(&sem_pistas);
+        sem_post(&sem_torre);
+        aviao->estado = FINALIZADO;
+        return;
     }
     
     aviao->estado = DECOLANDO;
@@ -436,9 +634,6 @@ void decolagem(aviao_t* aviao) {
     imprimir_status_recursos(" TODOS OS RECURSOS LIBERADOS", aviao);
     
     aviao->estado = FINALIZADO;
-    pthread_mutex_lock(&mutex_estatisticas);
-    pthread_mutex_unlock(&mutex_estatisticas);
-    
     imprimir_status(" DECOLAGEM CONCLUÍDA - AVIÃO FINALIZADO", aviao);
 }
 
@@ -447,8 +642,6 @@ void verificar_timeout(aviao_t* aviao) {
     
     if (tempo_espera > ALERTA_CRITICO && !aviao->alerta_critico) {
         aviao->alerta_critico = 1;
-        pthread_mutex_lock(&mutex_estatisticas);
-        pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status(" ALERTA CRÍTICO - 60s de espera! POSSÍVEL STARVATION!", aviao);
         
         // Verificar se é voo doméstico sendo prejudicado por internacionais
@@ -468,8 +661,6 @@ void verificar_timeout(aviao_t* aviao) {
     
     if (tempo_espera > TEMPO_CRASH && !aviao->crashed) {
         aviao->crashed = 1;
-        pthread_mutex_lock(&mutex_estatisticas);
-        pthread_mutex_unlock(&mutex_estatisticas);
         imprimir_status("💥 CRASH SIMULADO - 90s de espera! THREAD FINALIZADA!", aviao);
         
         printf(COR_CRASH "     └─  FALHA OPERACIONAL: Avião %s %d crashou por timeout excessivo!" RESET "\n", 
@@ -566,9 +757,6 @@ void detectar_deadlock() {
             printf(COR_DEADLOCK "   - %d aviões esperando há mais de 20 segundos" RESET "\n", avioes_esperando_muito);
             printf(COR_DEADLOCK "   - Voos domésticos bloqueados: %d" RESET "\n", voos_dom_bloqueados);
             printf(COR_DEADLOCK "   - Voos internacionais bloqueados: %d" RESET "\n", voos_int_bloqueados);
-            
-            pthread_mutex_lock(&mutex_estatisticas);
-            pthread_mutex_unlock(&mutex_estatisticas);
             
             imprimir_estado_recursos();
         }
