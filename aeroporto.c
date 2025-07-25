@@ -58,12 +58,13 @@
 #define COR_CRIADO         GREEN
 #define COR_FINALIZADO     BRIGHT_GREEN
 #define COR_STARVATION     BOLD YELLOW
+#define COR_CONFIG         BOLD BRIGHT_CYAN
 
-// configuracoes do aeroporto
-#define NUM_PISTAS 3
-#define NUM_PORTOES 5
-#define MAX_TORRE_OPERACOES 2
-#define TEMPO_SIMULACAO 150  // 5 minutos = 300 segundos
+// Configurações do aeroporto (agora variáveis globais)
+int NUM_PISTAS;
+int NUM_PORTOES;
+int MAX_TORRE_OPERACOES;
+int TEMPO_SIMULACAO;
 #define ALERTA_CRITICO 60    
 #define TEMPO_CRASH 90       
 #define MAX_AVIOES 100       
@@ -168,8 +169,12 @@ void imprimir_relatorio_final();
 void aguardar_threads_finalizarem();
 void imprimir_resumo_avioes();
 const char* obter_nome_estado(estado_aviao_t estado);
+void configurar_simulacao(); // Nova função para configuração
 
 int main() {
+    // Configurar parâmetros da simulação através de entrada do usuário
+    configurar_simulacao();
+    
     imprimir_cabecalho();
 
     srand(time(NULL));
@@ -207,6 +212,67 @@ int main() {
     
     printf(COR_TITULO "═══ SIMULAÇÃO FINALIZADA COM SUCESSO ═══" RESET "\n");
     return 0;
+}
+
+void configurar_simulacao() {
+    printf("\n");
+    printf(COR_TITULO "╔══════════════════════════════════════════════════════════════╗" RESET "\n");
+    printf(COR_TITULO "║" RESET COR_CONFIG "        CONFIGURAÇÃO DA SIMULAÇÃO DE TRÁFEGO AÉREO         " RESET COR_TITULO "║" RESET "\n");
+    printf(COR_TITULO "╚══════════════════════════════════════════════════════════════╝" RESET "\n\n");
+    
+    printf(COR_CONFIG "Por favor, configure os recursos do aeroporto:" RESET "\n\n");
+    
+    // Configurar número de pistas
+    do {
+        printf(COR_RECURSOS "Digite o número de PISTAS " RESET "(recomendado: 2-5): ");
+        if (scanf("%d", &NUM_PISTAS) != 1 || NUM_PISTAS < 1 || NUM_PISTAS > 10) {
+            printf(COR_ALERTA "⚠ Valor inválido! Digite um número entre 1 e 10." RESET "\n");
+            while (getchar() != '\n'); // Limpar buffer
+            NUM_PISTAS = 0; // Força repetição do loop
+        }
+    } while (NUM_PISTAS < 1 || NUM_PISTAS > 10);
+    
+    // Configurar número de portões
+    do {
+        printf(COR_RECURSOS "Digite o número de PORTÕES " RESET "(recomendado: 3-8): ");
+        if (scanf("%d", &NUM_PORTOES) != 1 || NUM_PORTOES < 1 || NUM_PORTOES > 15) {
+            printf(COR_ALERTA "⚠ Valor inválido! Digite um número entre 1 e 15." RESET "\n");
+            while (getchar() != '\n'); // Limpar buffer
+            NUM_PORTOES = 0; // Força repetição do loop
+        }
+    } while (NUM_PORTOES < 1 || NUM_PORTOES > 15);
+    
+    // Configurar operações simultâneas na torre
+    do {
+        printf(COR_RECURSOS "Digite o número máximo de operações simultâneas na TORRE " RESET "(recomendado: 1-3): ");
+        if (scanf("%d", &MAX_TORRE_OPERACOES) != 1 || MAX_TORRE_OPERACOES < 1 || MAX_TORRE_OPERACOES > 5) {
+            printf(COR_ALERTA "⚠ Valor inválido! Digite um número entre 1 e 5." RESET "\n");
+            while (getchar() != '\n'); // Limpar buffer
+            MAX_TORRE_OPERACOES = 0; // Força repetição do loop
+        }
+    } while (MAX_TORRE_OPERACOES < 1 || MAX_TORRE_OPERACOES > 5);
+    
+    // Configurar tempo de simulação
+    do {
+        printf(COR_RECURSOS "Digite o TEMPO DE SIMULAÇÃO em segundos " RESET "(recomendado: 60-300): ");
+        if (scanf("%d", &TEMPO_SIMULACAO) != 1 || TEMPO_SIMULACAO < 30 || TEMPO_SIMULACAO > 600) {
+            printf(COR_ALERTA "⚠ Valor inválido! Digite um número entre 30 e 600 segundos." RESET "\n");
+            while (getchar() != '\n'); // Limpar buffer
+            TEMPO_SIMULACAO = 0; // Força repetição do loop
+        }
+    } while (TEMPO_SIMULACAO < 30 || TEMPO_SIMULACAO > 600);
+    
+    // Mostrar configuração escolhida
+    printf("\n" COR_SUCESSO "✓ Configuração aplicada com sucesso!" RESET "\n");
+    printf(COR_CONFIG "═══ RESUMO DA CONFIGURAÇÃO ═══" RESET "\n");
+    printf(COR_RECURSOS "  Pistas: " RESET "%d\n", NUM_PISTAS);
+    printf(COR_RECURSOS "  Portões: " RESET "%d\n", NUM_PORTOES);
+    printf(COR_RECURSOS "  Torre (operações simultâneas): " RESET "%d\n", MAX_TORRE_OPERACOES);
+    printf(COR_RECURSOS "  Tempo de simulação: " RESET "%d segundos (%.1f minutos)\n", TEMPO_SIMULACAO, TEMPO_SIMULACAO/60.0);
+    printf("\n" COR_SUBTITULO "Pressione ENTER para iniciar a simulação..." RESET);
+    getchar(); // Consumir o \n do último scanf
+    getchar(); // Aguardar ENTER do usuário
+    printf("\n");
 }
 
 void aguardar_threads_finalizarem() {
@@ -296,10 +362,11 @@ void imprimir_cabecalho() {
     printf(COR_TITULO "╔══════════════════════════════════════════════════════════════╗" RESET "\n");
     printf(COR_TITULO "║" RESET COR_SUBTITULO "        SIMULAÇÃO DE CONTROLE DE TRÁFEGO AÉREO                 " RESET COR_TITULO "║" RESET "\n");
     printf(COR_TITULO "╚══════════════════════════════════════════════════════════════╝" RESET "\n");
-    printf(COR_RECURSOS "Recursos: " RESET "%d pistas, %d portões, %d operações simultâneas na torre\n",
+    printf(COR_CONFIG "Configuração atual:" RESET "\n");
+    printf(COR_RECURSOS "  Recursos: " RESET "%d pistas, %d portões, %d operações simultâneas na torre\n",
            NUM_PISTAS, NUM_PORTOES, MAX_TORRE_OPERACOES);
-    printf(COR_RECURSOS "Tempo de simulação: " RESET "%d segundos\n", TEMPO_SIMULACAO);
-    printf(COR_RECURSOS "Legenda: " RESET COR_DOMESTICO "DOM" RESET " = Doméstico | " COR_INTERNACIONAL "INT" RESET " = Internacional\n\n");
+    printf(COR_RECURSOS "  Tempo de simulação: " RESET "%d segundos (%.1f minutos)\n", TEMPO_SIMULACAO, TEMPO_SIMULACAO/60.0);
+    printf(COR_RECURSOS "  Legenda: " RESET COR_DOMESTICO "DOM" RESET " = Doméstico | " COR_INTERNACIONAL "INT" RESET " = Internacional\n\n");
 }
 
 void inicializar_recursos() {
@@ -1068,7 +1135,7 @@ void detectar_deadlock() {
         
         printf(COR_SUBTITULO "\n═══ MONITORAMENTO DE DEADLOCK/STARVATION ═══" RESET "\n");
         
-                for (int i = 0; i < contador_avioes; i++) {
+        for (int i = 0; i < contador_avioes; i++) {
             if (avioes[i].estado != FINALIZADO && avioes[i].estado != CRASHED) {
                 threads_ativas++;
                 double tempo_espera = tempo_decorrido(avioes[i].tempo_inicio_espera);
@@ -1281,6 +1348,14 @@ void imprimir_relatorio_final() {
     }
     printf(COR_TITULO "└─────────────────────────────────────────────────────────────┘" RESET "\n\n");
     
+    // ========== CONFIGURAÇÃO UTILIZADA ==========
+    printf(COR_TITULO "┌─ CONFIGURAÇÃO UTILIZADA ────────────────────────────────────┐" RESET "\n");
+    printf(COR_CONFIG "│ Pistas disponíveis:             " RESET "%d                          │\n", NUM_PISTAS);
+    printf(COR_CONFIG "│ Portões disponíveis:            " RESET "%d                          │\n", NUM_PORTOES);
+    printf(COR_CONFIG "│ Torre (operações simultâneas):  " RESET "%d                          │\n", MAX_TORRE_OPERACOES);
+    printf(COR_CONFIG "│ Tempo de simulação configurado: " RESET "%d segundos                 │\n", TEMPO_SIMULACAO);
+    printf(COR_TITULO "└─────────────────────────────────────────────────────────────┘" RESET "\n\n");
+    
     // ========== OPERAÇÕES REALIZADAS ==========
     printf(COR_TITULO "┌─ OPERAÇÕES REALIZADAS ──────────────────────────────────────┐" RESET "\n");
     printf(COR_POUSO "│  Pousos realizados:            " RESET "%d operações               │\n", stats.pousos_realizados);
@@ -1331,6 +1406,18 @@ void imprimir_relatorio_final() {
            stats.recursos_maximos_utilizados_portoes, NUM_PORTOES);
     printf(COR_RECURSOS "│  Torre (máximo simultâneo):    " RESET "%d/%d                       │\n", 
            stats.recursos_maximos_utilizados_torre, MAX_TORRE_OPERACOES);
+    
+    // Análise de eficiência dos recursos
+    if (stats.recursos_maximos_utilizados_pistas == NUM_PISTAS) {
+        printf(COR_ALERTA "│  ⚠ Pistas: 100%% de utilização máxima atingida        │" RESET "\n");
+    }
+    if (stats.recursos_maximos_utilizados_portoes == NUM_PORTOES) {
+        printf(COR_ALERTA "│  ⚠ Portões: 100%% de utilização máxima atingida       │" RESET "\n");
+    }
+    if (stats.recursos_maximos_utilizados_torre == MAX_TORRE_OPERACOES) {
+        printf(COR_ALERTA "│  ⚠ Torre: 100%% de utilização máxima atingida          │" RESET "\n");
+    }
+    
     printf(COR_TITULO "└─────────────────────────────────────────────────────────────┘" RESET "\n\n");
     
     // ========== MÉTRICAS DE PERFORMANCE ==========
@@ -1340,6 +1427,11 @@ void imprimir_relatorio_final() {
         
         double taxa_throughput = (double)stats.avioes_finalizados_sucesso / (tempo_total_simulacao / 60.0);
         printf(COR_RECURSOS "│  Throughput (aviões/minuto):   " RESET "%.2f aviões/min           │\n", taxa_throughput);
+        
+        // Eficiência dos recursos baseada na configuração
+        double eficiencia_geral = taxa_throughput / (NUM_PISTAS + NUM_PORTOES + MAX_TORRE_OPERACOES);
+        printf(COR_RECURSOS "│  Eficiência geral:             " RESET "%.3f aviões/min/recurso   │\n", eficiencia_geral);
+        
         printf(COR_TITULO "└─────────────────────────────────────────────────────────────┘" RESET "\n\n");
     }
     
@@ -1360,6 +1452,29 @@ void imprimir_relatorio_final() {
             printf(COR_SUCESSO "│ ✓ Sistema com boa equidade entre tipos de voo            │" RESET "\n");
         }
     }
+    printf(COR_TITULO "└─────────────────────────────────────────────────────────────┘" RESET "\n\n");
+    
+    // ========== RECOMENDAÇÕES ==========
+    printf(COR_TITULO "┌─ RECOMENDAÇÕES DE CONFIGURAÇÃO ─────────────────────────────┐" RESET "\n");
+    
+    if (stats.avioes_crashed > stats.avioes_finalizados_sucesso / 2) {
+        printf(COR_ALERTA "│ ⚠ ALTA TAXA DE CRASH - Considere aumentar recursos:        │" RESET "\n");
+        if (stats.recursos_maximos_utilizados_pistas == NUM_PISTAS) {
+            printf(COR_ALERTA "│   • Aumentar número de PISTAS                               │" RESET "\n");
+        }
+        if (stats.recursos_maximos_utilizados_portoes == NUM_PORTOES) {
+            printf(COR_ALERTA "│   • Aumentar número de PORTÕES                              │" RESET "\n");
+        }
+        if (stats.recursos_maximos_utilizados_torre == MAX_TORRE_OPERACOES) {
+            printf(COR_ALERTA "│   • Aumentar operações simultâneas da TORRE                 │" RESET "\n");
+        }
+    } else if (stats.avioes_crashed == 0 && stats.recursos_maximos_utilizados_pistas < NUM_PISTAS - 1) {
+        printf(COR_SUCESSO "│ ✓ RECURSOS SUBUTILIZADOS - Pode reduzir para economizar:   │" RESET "\n");
+        printf(COR_SUCESSO "│   • Configuração atual está superdimensionada              │" RESET "\n");
+    } else {
+        printf(COR_SUCESSO "│ ✓ Configuração bem dimensionada para a carga atual         │" RESET "\n");
+    }
+    
     printf(COR_TITULO "└─────────────────────────────────────────────────────────────┘" RESET "\n\n");
     
     printf(COR_TITULO "═══ RELATÓRIO FINAL CONCLUÍDO ═══" RESET "\n\n");
