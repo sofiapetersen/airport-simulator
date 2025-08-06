@@ -1,12 +1,13 @@
-#define _GNU_SOURCE  // Para pthread_timedjoin_np
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
-#include <semaphore.h>
+#include <semaphore.h> 
 #include <unistd.h>
 #include <time.h>
 #include <string.h>
 #include <errno.h>  // Para ETIMEDOUT
+
 
 // ========== CÓDIGOS ANSI PARA CORES ==========
 #define RESET       "\033[0m"
@@ -97,8 +98,16 @@ typedef struct {
     int alerta_critico;
     int crashed;
     pthread_t thread;
-    int thread_ativa; // Flag para indicar se a thread está ativa
-    int tempo_total_operacao; // Para estatísticas
+    int thread_ativa;
+    int tempo_total_operacao;
+
+    int recurso_pista_obtido;
+    int recurso_portao_obtido;
+    int recurso_torre_obtido;
+    pthread_cond_t condicao_pista;
+    pthread_cond_t condicao_portao;
+    pthread_cond_t condicao_torre;
+    pthread_mutex_t mutex_recurso;
 } aviao_t;
 
 typedef struct {
@@ -134,7 +143,7 @@ sem_t sem_torre;
 // mutex para controle
 pthread_mutex_t mutex_output = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutex_estatisticas = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t mutex_aviao = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex_aviao;
 
 // variaveis globais
 aviao_t avioes[MAX_AVIOES];
@@ -147,6 +156,25 @@ int pistas_em_uso = 0;
 int portoes_em_uso = 0;
 int torre_operacoes_ativas = 0;
 
+// Nova estrutura para fila de prioridade
+typedef struct no_fila {
+    aviao_t* aviao;
+    struct no_fila* proximo;
+} no_fila_t;
+
+typedef struct {
+    no_fila_t* inicio;
+    no_fila_t* fim;
+    int tamanho;
+    pthread_mutex_t mutex;
+    pthread_cond_t condicao;
+} fila_prioridade_t;
+
+// Filas globais para cada tipo de recurso
+fila_prioridade_t fila_pistas;
+fila_prioridade_t fila_portoes;
+fila_prioridade_t fila_torre;
+
 // Protótipos das funções
 void* aviao_thread(void* arg);
 void pouso(aviao_t* aviao);
@@ -157,6 +185,8 @@ void imprimir_status(const char* msg, aviao_t* aviao);
 void imprimir_status_recursos(const char* operacao, aviao_t* aviao);
 void inicializar_recursos();
 void finalizar_recursos();
+void imprimir_status_recursos_prioridade(const char* operacao, aviao_t* aviao, const char* prioridade);
+int solicitar_recurso_com_fila(aviao_t* aviao, fila_prioridade_t* fila, pthread_cond_t* condicao, int* flag_obtido);
 void criar_avioes();
 void detectar_deadlock();
 void imprimir_estado_recursos();
@@ -169,24 +199,42 @@ void imprimir_relatorio_final();
 void aguardar_threads_finalizarem();
 void imprimir_resumo_avioes();
 const char* obter_nome_estado(estado_aviao_t estado);
-void configurar_simulacao(); // Nova função para configuração
+void configurar_simulacao();
+void inicializar_fila(fila_prioridade_t* fila);
+void finalizar_fila(fila_prioridade_t* fila);
+int calcular_prioridade(aviao_t* aviao);
+void inserir_na_fila(fila_prioridade_t* fila, aviao_t* aviao);
+aviao_t* remover_da_fila(fila_prioridade_t* fila);
+void reordenar_fila_por_aging(fila_prioridade_t* fila);
+void* gerenciar_pistas(void* arg);
+void* gerenciar_portoes(void* arg);
+void* gerenciar_torre(void* arg);
+
+
 
 int main() {
-    // Configurar parâmetros da simulação através de entrada do usuário
     configurar_simulacao();
-    
     imprimir_cabecalho();
+
+    // Initialize mutex_aviao at runtime
+    pthread_mutex_init(&mutex_aviao, NULL);
 
     srand(time(NULL));
     inicio_simulacao = time(NULL);
     
     inicializar_recursos();
     
+    // NOVO: Criar threads de gerenciamento de recursos
+    pthread_t thread_pistas, thread_portoes, thread_torre_mgr;
+    pthread_create(&thread_pistas, NULL, gerenciar_pistas, NULL);
+    pthread_create(&thread_portoes, NULL, gerenciar_portoes, NULL);
+    pthread_create(&thread_torre_mgr, NULL, gerenciar_torre, NULL);
+    
     // Criar thread para gerar aviões
     pthread_t thread_criador;
     pthread_create(&thread_criador, NULL, (void*)criar_avioes, NULL);
     
-    // Thread para monitoramento de deadlocks a cada 15 segundos
+    // Thread para monitoramento de deadlocks
     pthread_t thread_monitor;
     pthread_create(&thread_monitor, NULL, (void*)detectar_deadlock, NULL);
     
@@ -203,8 +251,18 @@ int main() {
     pthread_join(thread_criador, NULL);
     pthread_join(thread_monitor, NULL);
     
-    // Aguarda todas as threads de aviões terminarem naturalmente
+    // NOVO: Sinalizar fim para threads de gerenciamento
+    pthread_cond_broadcast(&fila_pistas.condicao);
+    pthread_cond_broadcast(&fila_portoes.condicao);
+    pthread_cond_broadcast(&fila_torre.condicao);
+    
+    // Aguarda todas as threads de aviões terminarem
     aguardar_threads_finalizarem();
+    
+    // NOVO: Aguarda threads de gerenciamento
+    pthread_join(thread_pistas, NULL);
+    pthread_join(thread_portoes, NULL);
+    pthread_join(thread_torre_mgr, NULL);
     
     finalizar_recursos();
     imprimir_resumo_avioes();
@@ -382,16 +440,82 @@ void inicializar_recursos() {
         perror(RED "Erro ao inicializar semáforo de torre" RESET);
         exit(1);
     }
-    printf(COR_SUCESSO "✓ Recursos inicializados com sucesso!" RESET "\n\n");
+    
+    // Inicializar filas de prioridade
+    inicializar_fila(&fila_pistas);
+    inicializar_fila(&fila_portoes);
+    inicializar_fila(&fila_torre);
+    
+    printf(COR_SUCESSO "✓ Recursos e filas de prioridade inicializados com sucesso!" RESET "\n\n");
 }
 
 void finalizar_recursos() {
     sem_destroy(&sem_pistas);
     sem_destroy(&sem_portoes);
     sem_destroy(&sem_torre);
+    
+    finalizar_fila(&fila_pistas);
+    finalizar_fila(&fila_portoes);
+    finalizar_fila(&fila_torre);
+    
     pthread_mutex_destroy(&mutex_output);
     pthread_mutex_destroy(&mutex_estatisticas);
     pthread_mutex_destroy(&mutex_aviao);
+}
+
+void imprimir_status_recursos_prioridade(const char* operacao, aviao_t* aviao, const char* prioridade) {
+    pthread_mutex_lock(&mutex_output);
+    
+    const char* tipo_str = (aviao->tipo == VOO_DOMESTICO) ? "DOM" : "INT";
+    const char* cor_tipo = obter_cor_tipo_aviao(aviao->tipo);
+    const char* cor_operacao = obter_cor_por_operacao(operacao);
+    double tempo_sim = tempo_decorrido(inicio_simulacao);
+    
+    printf(COR_TEMPO "[%.1fs]" RESET " Avião %s%d (%s)%s: %s%s%s " COR_RECURSOS "[%s]" RESET "\n", 
+           tempo_sim, cor_tipo, aviao->id, tipo_str, RESET, cor_operacao, operacao, RESET, prioridade);
+    
+    // Mostrar estado atual dos recursos
+    printf(COR_RECURSOS "     └─ Recursos: " RESET "Pistas " BRIGHT_BLUE "%d/%d" RESET " | Portões " BRIGHT_MAGENTA "%d/%d" RESET " | Torre " BRIGHT_GREEN "%d/%d" RESET "\n",
+           pistas_em_uso, NUM_PISTAS, portoes_em_uso, NUM_PORTOES, 
+           torre_operacoes_ativas, MAX_TORRE_OPERACOES);
+    
+    pthread_mutex_unlock(&mutex_output);
+}
+
+int solicitar_recurso_com_fila(aviao_t* aviao, fila_prioridade_t* fila, pthread_cond_t* condicao, int* flag_obtido) {
+    // Inicializar variáveis de controle do avião se necessário
+    if (aviao->mutex_recurso.__data.__lock == 0) { // Verificação rudimentar se foi inicializado
+        pthread_mutex_init(&aviao->mutex_recurso, NULL);
+        pthread_cond_init(&aviao->condicao_pista, NULL);
+        pthread_cond_init(&aviao->condicao_portao, NULL);
+        pthread_cond_init(&aviao->condicao_torre, NULL);
+        aviao->recurso_pista_obtido = 0;
+        aviao->recurso_portao_obtido = 0;
+        aviao->recurso_torre_obtido = 0;
+    }
+    
+    // Inserir na fila de prioridade
+    inserir_na_fila(fila, aviao);
+    
+    // Aguardar até obter o recurso
+    pthread_mutex_lock(&aviao->mutex_recurso);
+    while (!(*flag_obtido) && !aviao->crashed) {
+        struct timespec timeout;
+        clock_gettime(CLOCK_REALTIME, &timeout);
+        timeout.tv_sec += 5; // Timeout de 5 segundos para verificar crash
+        
+        int result = pthread_cond_timedwait(condicao, &aviao->mutex_recurso, &timeout);
+        if (result == ETIMEDOUT) {
+            verificar_timeout(aviao);
+        }
+    }
+    
+    int sucesso = *flag_obtido && !aviao->crashed;
+    *flag_obtido = 0; // Reset para próximo uso
+    
+    pthread_mutex_unlock(&aviao->mutex_recurso);
+    
+    return sucesso;
 }
 
 void criar_avioes() {
@@ -430,6 +554,7 @@ void criar_avioes() {
 }
 
 void* aviao_thread(void* arg) {
+    (void)arg;
     aviao_t* aviao = (aviao_t*)arg;
     
     while (aviao->estado != FINALIZADO && aviao->estado != CRASHED) {
@@ -461,158 +586,59 @@ void* aviao_thread(void* arg) {
     return NULL;
 }
 
-// Substitua as funções pouso(), desembarque() e decolagem() pelas versões corrigidas:
-
 void pouso(aviao_t* aviao) {
     imprimir_status("SOLICITANDO RECURSOS PARA POUSO", aviao);
     
     if (aviao->tipo == VOO_INTERNACIONAL) {
         // Voo internacional: Pista → Torre
-        imprimir_status("Aguardando PISTA (prioridade internacional)", aviao);
+        imprimir_status("Entrando na fila de PISTAS (prioridade internacional)", aviao);
         
-        // Verificar timeout enquanto aguarda pista
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5; // Timeout de 5 segundos para verificação
-        
-        while (sem_timedwait(&sem_pistas, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    return;
-                }
-                // Renovar timeout para próxima tentativa
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                // Outro erro - sair
-                return;
-            }
+        if (!solicitar_recurso_com_fila(aviao, &fila_pistas, &aviao->condicao_pista, &aviao->recurso_pista_obtido)) {
+            aviao->estado = CRASHED;
+            return;
         }
         
-        pthread_mutex_lock(&mutex_estatisticas);
-        pistas_em_uso++;
-        if (pistas_em_uso > stats.recursos_maximos_utilizados_pistas) {
-            stats.recursos_maximos_utilizados_pistas = pistas_em_uso;
+        imprimir_status("Entrando na fila da TORRE DE CONTROLE", aviao);
+        
+        if (!solicitar_recurso_com_fila(aviao, &fila_torre, &aviao->condicao_torre, &aviao->recurso_torre_obtido)) {
+            // Liberar pista antes de sair
+            pthread_mutex_lock(&mutex_estatisticas);
+            pistas_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_pistas);
+            aviao->estado = CRASHED;
+            return;
         }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("PISTA ADQUIRIDA", aviao);
-        
-        imprimir_status("Aguardando TORRE DE CONTROLE", aviao);
-        
-        // Verificar timeout enquanto aguarda torre
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_torre, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    // Liberar pista antes de sair
-                    pthread_mutex_lock(&mutex_estatisticas);
-                    pistas_em_uso--;
-                    pthread_mutex_unlock(&mutex_estatisticas);
-                    sem_post(&sem_pistas);
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                // Outro erro - liberar pista e sair
-                pthread_mutex_lock(&mutex_estatisticas);
-                pistas_em_uso--;
-                pthread_mutex_unlock(&mutex_estatisticas);
-                sem_post(&sem_pistas);
-                return;
-            }
-        }
-        
-        pthread_mutex_lock(&mutex_estatisticas);
-        torre_operacoes_ativas++;
-        if (torre_operacoes_ativas > stats.recursos_maximos_utilizados_torre) {
-            stats.recursos_maximos_utilizados_torre = torre_operacoes_ativas;
-        }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("TORRE ADQUIRIDA", aviao);
     } else {
         // Voo doméstico: Torre → Pista
-        imprimir_status("Aguardando TORRE DE CONTROLE", aviao);
+        imprimir_status("Entrando na fila da TORRE DE CONTROLE", aviao);
         
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_torre, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                return;
-            }
+        if (!solicitar_recurso_com_fila(aviao, &fila_torre, &aviao->condicao_torre, &aviao->recurso_torre_obtido)) {
+            aviao->estado = CRASHED;
+            return;
         }
         
-        pthread_mutex_lock(&mutex_estatisticas);
-        torre_operacoes_ativas++;
-        if (torre_operacoes_ativas > stats.recursos_maximos_utilizados_torre) {
-            stats.recursos_maximos_utilizados_torre = torre_operacoes_ativas;
+        imprimir_status("Entrando na fila de PISTAS", aviao);
+        
+        if (!solicitar_recurso_com_fila(aviao, &fila_pistas, &aviao->condicao_pista, &aviao->recurso_pista_obtido)) {
+            pthread_mutex_lock(&mutex_estatisticas);
+            torre_operacoes_ativas--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_torre);
+            aviao->estado = CRASHED;
+            return;
         }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("TORRE ADQUIRIDA", aviao);
-        
-        imprimir_status("Aguardando PISTA", aviao);
-        
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_pistas, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    // Liberar torre antes de sair
-                    pthread_mutex_lock(&mutex_estatisticas);
-                    torre_operacoes_ativas--;
-                    pthread_mutex_unlock(&mutex_estatisticas);
-                    sem_post(&sem_torre);
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                pthread_mutex_lock(&mutex_estatisticas);
-                torre_operacoes_ativas--;
-                pthread_mutex_unlock(&mutex_estatisticas);
-                sem_post(&sem_torre);
-                return;
-            }
-        }
-        
-        pthread_mutex_lock(&mutex_estatisticas);
-        pistas_em_uso++;
-        if (pistas_em_uso > stats.recursos_maximos_utilizados_pistas) {
-            stats.recursos_maximos_utilizados_pistas = pistas_em_uso;
-        }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("PISTA ADQUIRIDA", aviao);
     }
     
     aviao->estado = POUSANDO;
     imprimir_status("EXECUTANDO POUSO", aviao);
     
-    // Simula tempo de pouso - verificar timeout durante execução
+    // Simula tempo de pouso
     for (int i = 0; i < (rand() % 3 + 2); i++) {
         sleep(1);
         verificar_timeout(aviao);
         if (aviao->crashed) {
             aviao->estado = CRASHED;
-            // Liberar recursos antes de sair
             pthread_mutex_lock(&mutex_estatisticas);
             pistas_em_uso--;
             torre_operacoes_ativas--;
@@ -645,138 +671,48 @@ void desembarque(aviao_t* aviao) {
     
     if (aviao->tipo == VOO_INTERNACIONAL) {
         // Voo internacional: Portão → Torre
-        imprimir_status("Aguardando PORTÃO DE EMBARQUE (prioridade internacional)", aviao);
+        imprimir_status("Entrando na fila de PORTÕES (prioridade internacional)", aviao);
         
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_portoes, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                return;
-            }
+        if (!solicitar_recurso_com_fila(aviao, &fila_portoes, &aviao->condicao_portao, &aviao->recurso_portao_obtido)) {
+            aviao->estado = CRASHED;
+            return;
         }
         
-        pthread_mutex_lock(&mutex_estatisticas);
-        portoes_em_uso++;
-        if (portoes_em_uso > stats.recursos_maximos_utilizados_portoes) {
-            stats.recursos_maximos_utilizados_portoes = portoes_em_uso;
+        imprimir_status("Entrando na fila da TORRE DE CONTROLE", aviao);
+        
+        if (!solicitar_recurso_com_fila(aviao, &fila_torre, &aviao->condicao_torre, &aviao->recurso_torre_obtido)) {
+            pthread_mutex_lock(&mutex_estatisticas);
+            portoes_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_portoes);
+            aviao->estado = CRASHED;
+            return;
         }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("PORTÃO ADQUIRIDO", aviao);
-        
-        imprimir_status("Aguardando TORRE DE CONTROLE", aviao);
-        
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_torre, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    pthread_mutex_lock(&mutex_estatisticas);
-                    portoes_em_uso--;
-                    pthread_mutex_unlock(&mutex_estatisticas);
-                    sem_post(&sem_portoes);
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                pthread_mutex_lock(&mutex_estatisticas);
-                portoes_em_uso--;
-                pthread_mutex_unlock(&mutex_estatisticas);
-                sem_post(&sem_portoes);
-                return;
-            }
-        }
-        
-        pthread_mutex_lock(&mutex_estatisticas);
-        torre_operacoes_ativas++;
-        if (torre_operacoes_ativas > stats.recursos_maximos_utilizados_torre) {
-            stats.recursos_maximos_utilizados_torre = torre_operacoes_ativas;
-        }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("TORRE ADQUIRIDA", aviao);
     } else {
         // Voo doméstico: Torre → Portão
-        imprimir_status("Aguardando TORRE DE CONTROLE", aviao);
+        imprimir_status("Entrando na fila da TORRE DE CONTROLE", aviao);
         
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_torre, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                return;
-            }
+        if (!solicitar_recurso_com_fila(aviao, &fila_torre, &aviao->condicao_torre, &aviao->recurso_torre_obtido)) {
+            aviao->estado = CRASHED;
+            return;
         }
         
-        pthread_mutex_lock(&mutex_estatisticas);
-        torre_operacoes_ativas++;
-        if (torre_operacoes_ativas > stats.recursos_maximos_utilizados_torre) {
-            stats.recursos_maximos_utilizados_torre = torre_operacoes_ativas;
+        imprimir_status("Entrando na fila de PORTÕES", aviao);
+        
+        if (!solicitar_recurso_com_fila(aviao, &fila_portoes, &aviao->condicao_portao, &aviao->recurso_portao_obtido)) {
+            pthread_mutex_lock(&mutex_estatisticas);
+            torre_operacoes_ativas--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_torre);
+            aviao->estado = CRASHED;
+            return;
         }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("TORRE ADQUIRIDA", aviao);
-        
-        imprimir_status("Aguardando PORTÃO DE EMBARQUE", aviao);
-        
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_portoes, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    pthread_mutex_lock(&mutex_estatisticas);
-                    torre_operacoes_ativas--;
-                    pthread_mutex_unlock(&mutex_estatisticas);
-                    sem_post(&sem_torre);
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                pthread_mutex_lock(&mutex_estatisticas);
-                torre_operacoes_ativas--;
-                pthread_mutex_unlock(&mutex_estatisticas);
-                sem_post(&sem_torre);
-                return;
-            }
-        }
-        
-        pthread_mutex_lock(&mutex_estatisticas);
-        portoes_em_uso++;
-        if (portoes_em_uso > stats.recursos_maximos_utilizados_portoes) {
-            stats.recursos_maximos_utilizados_portoes = portoes_em_uso;
-        }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("PORTÃO ADQUIRIDO", aviao);
     }
     
     aviao->estado = DESEMBARCANDO;
     imprimir_status("EXECUTANDO DESEMBARQUE DE PASSAGEIROS", aviao);
     
-    // Simula tempo de desembarque com verificação de timeout
+    // Simula tempo de desembarque
     for (int i = 0; i < (rand() % 4 + 2); i++) {
         sleep(1);
         verificar_timeout(aviao);
@@ -812,138 +748,48 @@ void decolagem(aviao_t* aviao) {
     
     if (aviao->tipo == VOO_INTERNACIONAL) {
         // Voo internacional: Pista → Torre (portão já ocupado)
-        imprimir_status("Aguardando PISTA (prioridade internacional)", aviao);
+        imprimir_status("Entrando na fila de PISTAS (prioridade internacional)", aviao);
         
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_pistas, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                return;
-            }
+        if (!solicitar_recurso_com_fila(aviao, &fila_pistas, &aviao->condicao_pista, &aviao->recurso_pista_obtido)) {
+            aviao->estado = CRASHED;
+            return;
         }
         
-        pthread_mutex_lock(&mutex_estatisticas);
-        pistas_em_uso++;
-        if (pistas_em_uso > stats.recursos_maximos_utilizados_pistas) {
-            stats.recursos_maximos_utilizados_pistas = pistas_em_uso;
+        imprimir_status("Entrando na fila da TORRE DE CONTROLE", aviao);
+        
+        if (!solicitar_recurso_com_fila(aviao, &fila_torre, &aviao->condicao_torre, &aviao->recurso_torre_obtido)) {
+            pthread_mutex_lock(&mutex_estatisticas);
+            pistas_em_uso--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_pistas);
+            aviao->estado = CRASHED;
+            return;
         }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("PISTA ADQUIRIDA", aviao);
-        
-        imprimir_status("Aguardando TORRE DE CONTROLE", aviao);
-        
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_torre, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    pthread_mutex_lock(&mutex_estatisticas);
-                    pistas_em_uso--;
-                    pthread_mutex_unlock(&mutex_estatisticas);
-                    sem_post(&sem_pistas);
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                pthread_mutex_lock(&mutex_estatisticas);
-                pistas_em_uso--;
-                pthread_mutex_unlock(&mutex_estatisticas);
-                sem_post(&sem_pistas);
-                return;
-            }
-        }
-        
-        pthread_mutex_lock(&mutex_estatisticas);
-        torre_operacoes_ativas++;
-        if (torre_operacoes_ativas > stats.recursos_maximos_utilizados_torre) {
-            stats.recursos_maximos_utilizados_torre = torre_operacoes_ativas;
-        }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("TORRE ADQUIRIDA", aviao);
     } else {
         // Voo doméstico: Torre → Pista (portão já ocupado)
-        imprimir_status("Aguardando TORRE DE CONTROLE", aviao);
+        imprimir_status("Entrando na fila da TORRE DE CONTROLE", aviao);
         
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_torre, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                return;
-            }
+        if (!solicitar_recurso_com_fila(aviao, &fila_torre, &aviao->condicao_torre, &aviao->recurso_torre_obtido)) {
+            aviao->estado = CRASHED;
+            return;
         }
         
-        pthread_mutex_lock(&mutex_estatisticas);
-        torre_operacoes_ativas++;
-        if (torre_operacoes_ativas > stats.recursos_maximos_utilizados_torre) {
-            stats.recursos_maximos_utilizados_torre = torre_operacoes_ativas;
+        imprimir_status("Entrando na fila de PISTAS", aviao);
+        
+        if (!solicitar_recurso_com_fila(aviao, &fila_pistas, &aviao->condicao_pista, &aviao->recurso_pista_obtido)) {
+            pthread_mutex_lock(&mutex_estatisticas);
+            torre_operacoes_ativas--;
+            pthread_mutex_unlock(&mutex_estatisticas);
+            sem_post(&sem_torre);
+            aviao->estado = CRASHED;
+            return;
         }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("TORRE ADQUIRIDA", aviao);
-        
-        imprimir_status("Aguardando PISTA", aviao);
-        
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 5;
-        
-        while (sem_timedwait(&sem_pistas, &timeout) != 0) {
-            if (errno == ETIMEDOUT) {
-                verificar_timeout(aviao);
-                if (aviao->crashed) {
-                    aviao->estado = CRASHED;
-                    pthread_mutex_lock(&mutex_estatisticas);
-                    torre_operacoes_ativas--;
-                    pthread_mutex_unlock(&mutex_estatisticas);
-                    sem_post(&sem_torre);
-                    return;
-                }
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 5;
-            } else {
-                pthread_mutex_lock(&mutex_estatisticas);
-                torre_operacoes_ativas--;
-                pthread_mutex_unlock(&mutex_estatisticas);
-                sem_post(&sem_torre);
-                return;
-            }
-        }
-        
-        pthread_mutex_lock(&mutex_estatisticas);
-        pistas_em_uso++;
-        if (pistas_em_uso > stats.recursos_maximos_utilizados_pistas) {
-            stats.recursos_maximos_utilizados_pistas = pistas_em_uso;
-        }
-        pthread_mutex_unlock(&mutex_estatisticas);
-        imprimir_status_recursos("PISTA ADQUIRIDA", aviao);
     }
     
     aviao->estado = DECOLANDO;
     imprimir_status("EXECUTANDO DECOLAGEM", aviao);
     
-    // Simula tempo de decolagem com verificação de timeout
+    // Simula tempo de decolagem
     for (int i = 0; i < (rand() % 3 + 2); i++) {
         sleep(1);
         verificar_timeout(aviao);
@@ -982,89 +828,46 @@ void decolagem(aviao_t* aviao) {
 void verificar_timeout(aviao_t* aviao) {
     double tempo_espera = tempo_decorrido(aviao->tempo_inicio_espera);
     
-    // ALERTA CRÍTICO após 60 segundos de espera
-    if (tempo_espera > ALERTA_CRITICO && !aviao->alerta_critico) {
-        aviao->alerta_critico = 1;
-        imprimir_status(" ALERTA CRÍTICO - 60s de espera! POSSÍVEL STARVATION!", aviao);
-        atualizar_estatisticas(aviao, "ALERTA_CRITICO");
-        
-        // Analisar se é starvation (especialmente para voos domésticos)
-        if (aviao->tipo == VOO_DOMESTICO) {
-            int voos_int_ativos = 0;
-            int voos_int_usando_recursos = 0;
-            
-            // Contar voos internacionais ativos e usando recursos
-            for (int i = 0; i < contador_avioes; i++) {
-                if (avioes[i].tipo == VOO_INTERNACIONAL && 
-                    avioes[i].estado != FINALIZADO && avioes[i].estado != CRASHED) {
-                    voos_int_ativos++;
-                    
-                    // Verificar se está usando recursos (operando)
-                    if (avioes[i].estado == POUSANDO || avioes[i].estado == DESEMBARCANDO || 
-                        avioes[i].estado == DECOLANDO) {
-                        voos_int_usando_recursos++;
-                    }
-                }
-            }
-            
-            if (voos_int_ativos > 0) {
-                printf(COR_STARVATION "     └─  STARVATION DETECTADA: Voo doméstico %d bloqueado há %.1fs" RESET "\n", 
-                       aviao->id, tempo_espera);
-                printf(COR_STARVATION "       • Voos internacionais ativos: %d" RESET "\n", voos_int_ativos);
-                printf(COR_STARVATION "       • Voos internacionais usando recursos: %d" RESET "\n", voos_int_usando_recursos);
-                printf(COR_STARVATION "       • CAUSA: Prioridade dos voos internacionais está impedindo acesso aos recursos" RESET "\n");
-                atualizar_estatisticas(aviao, "STARVATION_DETECTADA");
-            }
-        } else {
-            // Mesmo voos internacionais podem sofrer starvation se há muita contenção
-            printf(COR_ALERTA "     └─  Voo internacional em alerta - possível contenção de recursos" RESET "\n");
-        }
-        
-        // Mostrar estado atual dos recursos durante o alerta
-        printf(COR_RECURSOS "     └─  Estado dos recursos no momento do alerta:" RESET "\n");
-        printf(COR_RECURSOS "       • Pistas: %d/%d ocupadas | Portões: %d/%d ocupados | Torre: %d/%d ativa" RESET "\n",
-               pistas_em_uso, NUM_PISTAS, portoes_em_uso, NUM_PORTOES, torre_operacoes_ativas, MAX_TORRE_OPERACOES);
+    // Calcular nível de aging atual
+    int nivel_aging = 0;
+    if (tempo_espera > 30) {
+        nivel_aging = (int)((tempo_espera - 30) / 10) + 1;
     }
     
-    // CRASH após 90 segundos de espera
+    // ALERTA CRÍTICO e aging incremental
+    if (tempo_espera > 30 && (int)(tempo_espera / 10) != (int)((tempo_espera - 1) / 10)) {
+        // Disparar a cada 10 segundos após os 30s iniciais
+        printf(COR_STARVATION "⚡ AGING NÍVEL %d ATIVADO - Avião %d (%.1fs de espera)" RESET "\n", 
+               nivel_aging, aviao->id, tempo_espera);
+        
+        // Reordenar filas a cada incremento de aging
+        reordenar_fila_por_aging(&fila_pistas);
+        reordenar_fila_por_aging(&fila_portoes);
+        reordenar_fila_por_aging(&fila_torre);
+    }
+    
+    // Manter alerta crítico aos 60s
+    if (tempo_espera > ALERTA_CRITICO && !aviao->alerta_critico) {
+        aviao->alerta_critico = 1;
+        imprimir_status("🚨 ALERTA CRÍTICO - AGING MÁXIMO!", aviao);
+        atualizar_estatisticas(aviao, "ALERTA_CRITICO");
+    }
+    
+    // CRASH após 90 segundos
     if (tempo_espera > TEMPO_CRASH && !aviao->crashed) {
         aviao->crashed = 1;
-        
-        printf(COR_CRASH "\n CRASH SIMULADO - FALHA OPERACIONAL!" RESET "\n");
-        imprimir_status(" AVIÃO CRASHOU - 90s de espera! THREAD FINALIZADA!", aviao);
+        printf(COR_CRASH "\n💥 CRASH - FALHA TOTAL DO AGING!" RESET "\n");
+        imprimir_status(" AVIÃO CRASHOU MESMO COM AGING - SISTEMA SOBRECARREGADO!", aviao);
         
         printf(COR_CRASH "     ╔═══════════════════════════════════════════════════════╗" RESET "\n");
-        printf(COR_CRASH "     ║  FALHA OPERACIONAL CRÍTICA - AVIÃO %s %03d           ║" RESET "\n", 
-               (aviao->tipo == VOO_DOMESTICO) ? "DOM" : "INT", aviao->id);
-        printf(COR_CRASH "     ║  Tempo total de espera: %.1f segundos                 ║" RESET "\n", tempo_espera);
-        printf(COR_CRASH "     ║  Estado no momento do crash: %-25s ║" RESET "\n", obter_nome_estado(aviao->estado));
-        
-        // Diagnóstico específico para voos domésticos
-        if (aviao->tipo == VOO_DOMESTICO) {
-            int voos_int_ativos = 0;
-            for (int i = 0; i < contador_avioes; i++) {
-                if (avioes[i].tipo == VOO_INTERNACIONAL && 
-                    avioes[i].estado != FINALIZADO && avioes[i].estado != CRASHED) {
-                    voos_int_ativos++;
-                }
-            }
-            
-            printf(COR_CRASH "     ║  DIAGNÓSTICO: STARVATION SEVERA                       ║" RESET "\n");
-            printf(COR_CRASH "     ║  - Voo doméstico não conseguiu recursos              ║" RESET "\n");
-            printf(COR_CRASH "     ║  - Voos internacionais ativos: %-3d                   ║" RESET "\n", voos_int_ativos);
-            printf(COR_CRASH "     ║  - CAUSA: Prioridade excessiva dos voos internac.    ║" RESET "\n");
-        } else {
-            printf(COR_CRASH "     ║  DIAGNÓSTICO: CONTENÇÃO EXTREMA DE RECURSOS          ║" RESET "\n");
-            printf(COR_CRASH "     ║  - Mesmo com prioridade, não conseguiu recursos      ║" RESET "\n");
-        }
-        
+        printf(COR_CRASH "     ║  FALHA CRÍTICA DO SISTEMA DE AGING                    ║" RESET "\n");
+        printf(COR_CRASH "     ║  Avião %s %03d crashou após %.1f segundos             ║" RESET "\n", 
+               (aviao->tipo == VOO_DOMESTICO) ? "DOM" : "INT", aviao->id, tempo_espera);
+        printf(COR_CRASH "     ║  O aging foi ativado aos 60s mas não foi suficiente   ║" RESET "\n");
+        printf(COR_CRASH "     ║  DIAGNÓSTICO: Sistema extremamente sobrecarregado     ║" RESET "\n");
         printf(COR_CRASH "     ╚═══════════════════════════════════════════════════════╝" RESET "\n\n");
         
         atualizar_estatisticas(aviao, "CRASHED");
-        
-        // Log adicional para análise
-        printf(COR_TEMPO "[ANÁLISE] " RESET "Recursos no momento do crash: Pistas %d/%d, Portões %d/%d, Torre %d/%d\n",
-               pistas_em_uso, NUM_PISTAS, portoes_em_uso, NUM_PORTOES, torre_operacoes_ativas, MAX_TORRE_OPERACOES);
     }
 }
 
@@ -1478,4 +1281,342 @@ void imprimir_relatorio_final() {
     printf(COR_TITULO "└─────────────────────────────────────────────────────────────┘" RESET "\n\n");
     
     printf(COR_TITULO "═══ RELATÓRIO FINAL CONCLUÍDO ═══" RESET "\n\n");
+}
+
+void inicializar_fila(fila_prioridade_t* fila) {
+    fila->inicio = NULL;
+    fila->fim = NULL;
+    fila->tamanho = 0;
+    pthread_mutex_init(&fila->mutex, NULL);
+    pthread_cond_init(&fila->condicao, NULL);
+}
+
+void finalizar_fila(fila_prioridade_t* fila) {
+    pthread_mutex_lock(&fila->mutex);
+    
+    // Limpar todos os nós restantes
+    no_fila_t* atual = fila->inicio;
+    while (atual != NULL) {
+        no_fila_t* proximo = atual->proximo;
+        free(atual);
+        atual = proximo;
+    }
+    
+    fila->inicio = NULL;
+    fila->fim = NULL;
+    fila->tamanho = 0;
+    
+    pthread_mutex_unlock(&fila->mutex);
+    pthread_mutex_destroy(&fila->mutex);
+    pthread_cond_destroy(&fila->condicao);
+}
+
+int calcular_prioridade(aviao_t* aviao) {
+    double tempo_espera = tempo_decorrido(aviao->tempo_inicio_espera);
+
+    // Calcular aging incremental baseado no tempo de espera
+    int aging_bonus = 0;
+    if (tempo_espera > 30) {  // Começar aging após 30s
+        if (aviao->tipo == VOO_DOMESTICO) {
+            aging_bonus = (int)((tempo_espera - 30) / 10) * 2; // Aging dobra para domésticos
+        } else {
+            aging_bonus = (int)((tempo_espera - 30) / 10);     // Aging normal para internacionais
+        }
+    }
+
+    int prioridade_base;
+    if (aviao->tipo == VOO_INTERNACIONAL) {
+        prioridade_base = 100;  // Base alta para internacionais
+    } else {
+        prioridade_base = 200;  // Base mais baixa para domésticos
+    }
+
+    // Subtrair aging_bonus para aumentar prioridade (menor número = maior prioridade)
+    int prioridade_final = prioridade_base - aging_bonus;
+
+    // Garantir que não fique negativo
+    return (prioridade_final > 1) ? prioridade_final : 1;
+}
+
+void inserir_na_fila(fila_prioridade_t* fila, aviao_t* aviao) {
+    pthread_mutex_lock(&fila->mutex);
+    
+    no_fila_t* novo_no = malloc(sizeof(no_fila_t));
+    novo_no->aviao = aviao;
+    novo_no->proximo = NULL;
+    
+    int prioridade_nova = calcular_prioridade(aviao);
+    
+    // Se fila vazia ou nova prioridade é maior (número menor = prioridade maior)
+    if (fila->inicio == NULL || prioridade_nova < calcular_prioridade(fila->inicio->aviao)) {
+        novo_no->proximo = fila->inicio;
+        fila->inicio = novo_no;
+        if (fila->fim == NULL) {
+            fila->fim = novo_no;
+        }
+    } else {
+        // Encontrar posição correta na fila ordenada por prioridade
+        no_fila_t* atual = fila->inicio;
+        no_fila_t* anterior = NULL;
+        
+        while (atual != NULL && calcular_prioridade(atual->aviao) <= prioridade_nova) {
+            anterior = atual;
+            atual = atual->proximo;
+        }
+        
+        // Inserir na posição encontrada
+        novo_no->proximo = atual;
+        if (anterior != NULL) {
+            anterior->proximo = novo_no;
+        }
+        
+        // Atualizar fim se necessário
+        if (atual == NULL) {
+            fila->fim = novo_no;
+        }
+    }
+    
+    fila->tamanho++;
+    pthread_cond_signal(&fila->condicao);
+    pthread_mutex_unlock(&fila->mutex);
+}
+
+aviao_t* remover_da_fila(fila_prioridade_t* fila) {
+    pthread_mutex_lock(&fila->mutex);
+    
+    while (fila->inicio == NULL && criacao_avioes_ativa) {
+        pthread_cond_wait(&fila->condicao, &fila->mutex);
+    }
+    
+    if (fila->inicio == NULL) {
+        pthread_mutex_unlock(&fila->mutex);
+        return NULL;
+    }
+    
+    no_fila_t* no_removido = fila->inicio;
+    aviao_t* aviao = no_removido->aviao;
+    
+    fila->inicio = no_removido->proximo;
+    if (fila->inicio == NULL) {
+        fila->fim = NULL;
+    }
+    
+    fila->tamanho--;
+    free(no_removido);
+    
+    pthread_mutex_unlock(&fila->mutex);
+    return aviao;
+}
+
+void reordenar_fila_por_aging(fila_prioridade_t* fila) {
+    pthread_mutex_lock(&fila->mutex);
+    
+    if (fila->tamanho <= 1) {
+        pthread_mutex_unlock(&fila->mutex);
+        return;
+    }
+    
+    // Extrair todos os aviões da fila
+    aviao_t* avioes_temp[100]; // Assumindo máximo de 100 aviões na fila
+    int count = 0;
+    
+    no_fila_t* atual = fila->inicio;
+    while (atual != NULL && count < 100) {
+        avioes_temp[count++] = atual->aviao;
+        atual = atual->proximo;
+    }
+    
+    // Limpar fila atual
+    atual = fila->inicio;
+    while (atual != NULL) {
+        no_fila_t* proximo = atual->proximo;
+        free(atual);
+        atual = proximo;
+    }
+    
+    fila->inicio = NULL;
+    fila->fim = NULL;
+    fila->tamanho = 0;
+    
+    // Reinserir todos com prioridades atualizadas
+    for (int i = 0; i < count; i++) {
+        no_fila_t* novo_no = malloc(sizeof(no_fila_t));
+        novo_no->aviao = avioes_temp[i];
+        novo_no->proximo = NULL;
+        
+        int prioridade_nova = calcular_prioridade(avioes_temp[i]);
+        
+        // Inserir ordenadamente
+        if (fila->inicio == NULL || prioridade_nova < calcular_prioridade(fila->inicio->aviao)) {
+            novo_no->proximo = fila->inicio;
+            fila->inicio = novo_no;
+            if (fila->fim == NULL) {
+                fila->fim = novo_no;
+            }
+        } else {
+            no_fila_t* pos_atual = fila->inicio;
+            no_fila_t* anterior = NULL;
+            
+            while (pos_atual != NULL && calcular_prioridade(pos_atual->aviao) <= prioridade_nova) {
+                anterior = pos_atual;
+                pos_atual = pos_atual->proximo;
+            }
+            
+            novo_no->proximo = pos_atual;
+            if (anterior != NULL) {
+                anterior->proximo = novo_no;
+            }
+            
+            if (pos_atual == NULL) {
+                fila->fim = novo_no;
+            }
+        }
+        
+        fila->tamanho++;
+    }
+    
+    pthread_mutex_unlock(&fila->mutex);
+}
+
+// ========== THREAD DE GERENCIAMENTO DE RECURSOS ==========
+
+void* gerenciar_pistas(void* arg) {
+    (void)arg;
+    while (criacao_avioes_ativa || fila_pistas.tamanho > 0) {
+        // Aguardar recurso disponível
+        sem_wait(&sem_pistas);
+        
+        // Reordenar fila considerando aging
+        reordenar_fila_por_aging(&fila_pistas);
+        
+        // Pegar próximo avião da fila
+        aviao_t* aviao = remover_da_fila(&fila_pistas);
+        if (aviao == NULL) {
+            sem_post(&sem_pistas); // Devolver recurso se não há aviões
+            continue;
+        }
+        
+        // Verificar se avião ainda está ativo
+        if (aviao->crashed || aviao->estado == FINALIZADO) {
+            sem_post(&sem_pistas); // Devolver recurso
+            continue;
+        }
+        
+        pthread_mutex_lock(&mutex_estatisticas);
+        pistas_em_uso++;
+        if (pistas_em_uso > stats.recursos_maximos_utilizados_pistas) {
+            stats.recursos_maximos_utilizados_pistas = pistas_em_uso;
+        }
+        pthread_mutex_unlock(&mutex_estatisticas);
+        
+        // Notificar avião que conseguiu o recurso
+        aviao->recurso_pista_obtido = 1;
+        pthread_cond_signal(&aviao->condicao_pista);
+        
+        // Log da concessão com prioridade
+        double tempo_espera = tempo_decorrido(aviao->tempo_inicio_espera);
+        int nivel_aging = (tempo_espera > 30) ? (int)((tempo_espera - 30) / 10) + 1 : 0;
+
+        char texto_prioridade[50];
+        if (nivel_aging > 0) {
+            snprintf(texto_prioridade, sizeof(texto_prioridade), "AGING-LV%d", nivel_aging);
+        } else if (aviao->tipo == VOO_INTERNACIONAL) {
+            strcpy(texto_prioridade, "INTERNACIONAL");
+        } else {
+            strcpy(texto_prioridade, "DOMÉSTICO");
+        }
+        
+        imprimir_status_recursos_prioridade("PISTA CONCEDIDA", aviao, texto_prioridade);
+    }
+    return NULL;
+}
+
+void* gerenciar_portoes(void* arg) {
+    (void)arg;
+    while (criacao_avioes_ativa || fila_portoes.tamanho > 0) {
+        sem_wait(&sem_portoes);
+        
+        reordenar_fila_por_aging(&fila_portoes);
+        
+        aviao_t* aviao = remover_da_fila(&fila_portoes);
+        if (aviao == NULL) {
+            sem_post(&sem_portoes);
+            continue;
+        }
+        
+        if (aviao->crashed || aviao->estado == FINALIZADO) {
+            sem_post(&sem_portoes);
+            continue;
+        }
+        
+        pthread_mutex_lock(&mutex_estatisticas);
+        portoes_em_uso++;
+        if (portoes_em_uso > stats.recursos_maximos_utilizados_portoes) {
+            stats.recursos_maximos_utilizados_portoes = portoes_em_uso;
+        }
+        pthread_mutex_unlock(&mutex_estatisticas);
+        
+        aviao->recurso_portao_obtido = 1;
+        pthread_cond_signal(&aviao->condicao_portao);
+        
+        double tempo_espera = tempo_decorrido(aviao->tempo_inicio_espera);
+        int nivel_aging = (tempo_espera > 30) ? (int)((tempo_espera - 30) / 10) + 1 : 0;
+
+        char texto_prioridade[50];
+        if (nivel_aging > 0) {
+            snprintf(texto_prioridade, sizeof(texto_prioridade), "AGING-LV%d", nivel_aging);
+        } else if (aviao->tipo == VOO_INTERNACIONAL) {
+            strcpy(texto_prioridade, "INTERNACIONAL");
+        } else {
+            strcpy(texto_prioridade, "DOMÉSTICO");
+        }
+
+        imprimir_status_recursos_prioridade("PORTÃO CONCEDIDO", aviao, texto_prioridade);
+    }
+    return NULL;
+}
+
+void* gerenciar_torre(void* arg) {
+    (void)arg;
+    while (criacao_avioes_ativa || fila_torre.tamanho > 0) {
+        sem_wait(&sem_torre);
+        
+        reordenar_fila_por_aging(&fila_torre);
+        
+        aviao_t* aviao = remover_da_fila(&fila_torre);
+        if (aviao == NULL) {
+            sem_post(&sem_torre);
+            continue;
+        }
+        
+        if (aviao->crashed || aviao->estado == FINALIZADO) {
+            sem_post(&sem_torre);
+            continue;
+        }
+        
+        pthread_mutex_lock(&mutex_estatisticas);
+        torre_operacoes_ativas++;
+        if (torre_operacoes_ativas > stats.recursos_maximos_utilizados_torre) {
+            stats.recursos_maximos_utilizados_torre = torre_operacoes_ativas;
+        }
+        pthread_mutex_unlock(&mutex_estatisticas);
+        
+        aviao->recurso_torre_obtido = 1;
+        pthread_cond_signal(&aviao->condicao_torre);
+        
+        double tempo_espera = tempo_decorrido(aviao->tempo_inicio_espera);
+        int nivel_aging = (tempo_espera > 30) ? (int)((tempo_espera - 30) / 10) + 1 : 0;
+
+        char texto_prioridade[50];
+        if (nivel_aging > 0) {
+            snprintf(texto_prioridade, sizeof(texto_prioridade), "AGING-LV%d", nivel_aging);
+        } else if (aviao->tipo == VOO_INTERNACIONAL) {
+            strcpy(texto_prioridade, "INTERNACIONAL");
+        } else {
+            strcpy(texto_prioridade, "DOMÉSTICO");
+        }
+        
+        imprimir_status_recursos_prioridade("TORRE CONCEDIDA", aviao, texto_prioridade);
+    }
+    return NULL;
 }
