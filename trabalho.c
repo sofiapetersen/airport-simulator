@@ -41,8 +41,8 @@ int N_TORRE;
 int TEMPO_SIMULACAO;
 #define TEMPO_ALERTA 60
 #define TEMPO_CRITICO 90
-#define FREQUENCIA_DE_AVIAO 50
-#define MAX_AVIOES 10
+#define FREQUENCIA_DE_AVIAO 10
+#define MAX_AVIOES 50
 
 int avioes_domesticos_ativos = 0;
 int avioes_internacionais_ativos = 0;
@@ -317,6 +317,22 @@ void remove_plane_from_list(int index) {
     update_list_index();
 }
 
+int calcular_prioridade(t_node_aviao *aviao) {
+    time_t tempo_espera = time(NULL) - aviao->tempo_inicio_espera;
+    
+    if (tempo_espera >= TEMPO_CRITICO) {
+        return 10;
+    }
+    if (aviao->tipo == INTERNACIONAL) {
+        int bonus_tempo = tempo_espera / 30; // A cada 30s, ganha + prioridade
+        return 2 + bonus_tempo;
+    } else {
+        int bonus_tempo = tempo_espera / 20; // A cada 20s, ganha + prioridade
+        return 4 + bonus_tempo;
+    }
+}
+
+
 bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
     pthread_mutex_lock(&manager_mutex);
     
@@ -347,15 +363,21 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
         }
 
         bool deve_esperar_por_prioridade = false;
-        if (aviao->tipo == DOMESTICO && !aviao->em_alerta_critico) {
-            if (criticos_esperando > 0 || internacionais_nao_criticos_esperando > 0) {
-                deve_esperar_por_prioridade = true;
+        int minha_prioridade = calcular_prioridade(aviao);
+        
+        pthread_mutex_lock(&list_mutex);
+        t_node_aviao *current = head;
+        while (current != NULL) {
+            if (current != aviao && current->esperando_por == tipo_desejado) {
+                int prioridade_outro = calcular_prioridade(current);
+                if (prioridade_outro < minha_prioridade) { 
+                    deve_esperar_por_prioridade = true;
+                    break;
+                }
             }
-        } else if (aviao->tipo == INTERNACIONAL && !aviao->em_alerta_critico) {
-            if (criticos_esperando > 0) {
-                deve_esperar_por_prioridade = true;
-            }
+            current = current->next;
         }
+        pthread_mutex_unlock(&list_mutex);
 
         int recurso_idx = -1;
         if(!deve_esperar_por_prioridade) {
@@ -366,6 +388,7 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
                 }
             }
         }
+        
         if (recurso_idx != -1) {
             array_recurso[recurso_idx].em_use = true;
             array_recurso[recurso_idx].thread_id = aviao->thread_id;
@@ -376,8 +399,10 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
 
         aviao->esperando_por = tipo_desejado;
 
-        if (aviao->em_alerta_critico) criticos_esperando++;
-        else if (aviao->tipo == INTERNACIONAL) internacionais_nao_criticos_esperando++;
+        time_t tempo_espera = time(NULL) - aviao->tempo_inicio_espera;
+        if (tempo_espera >= TEMPO_CRITICO) {
+            aviao->em_alerta_critico = true;
+        }
 
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
@@ -385,27 +410,23 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
 
         int wait_result = pthread_cond_timedwait(&recurso_liberado_cond, &manager_mutex, &ts);
 
-        if (aviao->em_alerta_critico) criticos_esperando--;
-        else if (aviao->tipo == INTERNACIONAL) internacionais_nao_criticos_esperando--;
-
         if (wait_result == ETIMEDOUT){
-            time_t tempo_espera = time(NULL) - aviao->tempo_inicio_espera;
+            tempo_espera = time(NULL) - aviao->tempo_inicio_espera;
 
             if(tempo_espera == 0) aviao->tempo_inicio_espera = time(NULL);
 
-            if (tempo_espera > TEMPO_CRITICO) {
+            if (tempo_espera > TEMPO_CRITICO + 30) { 
                 aviao->status = CAIU;
                 aviao->esperando_por = NENHUM;
                 pthread_mutex_unlock(&manager_mutex);
                 int tempo_total = (int)(time(NULL) - aviao->tempo_inicio_operacao);
                 add_log_entry("ERRO", aviao->id, (aviao->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", "CAIU", "CANCELADO", "TIMEOUT", tempo_total);
                 return false;
-            } else if (tempo_espera > TEMPO_ALERTA && !aviao->em_alerta_critico) {
-                aviao->em_alerta_critico = true;
             }
         }
     }
 }
+
 
 void liberar_recurso(t_node_aviao *aviao, recurso_tipo tipo_a_liberar) {
     pthread_mutex_lock(&manager_mutex);
