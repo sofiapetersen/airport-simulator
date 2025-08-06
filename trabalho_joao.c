@@ -4,45 +4,28 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <unistd.h>
-#include <locale.h>
+#include <locale.h> 
 #include <ncurses.h>
 #include <stdbool.h>
 #include <time.h>
 #include <errno.h>
 
-#define BG_RESET   "\033[0m"
-#define BG_RED     "\033[1;31m"
-#define BG_GREEN   "\033[1;32m"
-#define BG_YELLOW  "\033[1;33m"
-#define BG_BLUE    "\033[1;34m"
-#define BG_MAGENTA "\033[1;35m"
-#define BG_CYAN    "\033[1;36m"
-#define BG_WHITE   "\033[1;37m"
 
-#define RESET          "\033[0m"
-#define BOLD           "\033[1m"
-#define CYAN           "\033[36m"
-#define BRIGHT_WHITE   "\033[97m"
-#define BRIGHT_CYAN    "\033[96m"
-#define BRIGHT_GREEN   "\033[92m"
-#define BG_YELLOW_RED  BOLD BG_YELLOW BG_RED
+pthread_mutex_t ncurses_mutex;
+pthread_mutex_t list_mutex;
+pthread_mutex_t alocacao_mutex;
+pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t manager_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t recurso_liberado_cond = PTHREAD_COND_INITIALIZER;
 
-#define COR_SUCESSO    BRIGHT_GREEN
-#define COR_ALERTA     BG_YELLOW_RED
-#define COR_RECURSOS   CYAN
-#define COR_TITULO     BOLD BRIGHT_WHITE
-#define COR_SUBTITULO  BOLD CYAN
-#define COR_CONFIG     BOLD BRIGHT_CYAN
-
-// Configurações
-int N_PISTAS;
-int N_PORTOES;
-int N_TORRE;
-int TEMPO_SIMULACAO;
-#define TEMPO_ALERTA 60
-#define TEMPO_CRITICO 90
-#define FREQUENCIA_DE_AVIAO 50
-#define MAX_AVIOES 10
+#define N_PISTAS 3 //3
+#define N_PORTOES 5 //5
+#define N_TORRE 1 //1
+#define TEMPO_SIMULACAO 120
+#define TEMPO_ALERTA 10
+#define TEMPO_CRITICO 20
+#define FREQUENCIA_DE_AVIAO 100 // nao pode ser 0
+#define MAX_AVIOES 2 
 
 int avioes_domesticos_ativos = 0;
 int avioes_internacionais_ativos = 0;
@@ -58,9 +41,9 @@ typedef struct {
     pthread_t thread_id;
 } t_recurso;
 
-t_recurso *pistas_rec;
-t_recurso *portoes_embarque_rec;
-t_recurso *torre_rec;
+t_recurso pistas_rec[N_PISTAS];
+t_recurso portoes_embarque_rec[N_PORTOES];
+t_recurso torre_rec[N_TORRE*2];
 
 typedef struct node_log {
     char tag[32];
@@ -69,8 +52,8 @@ typedef struct node_log {
     char motivo[32];
     char status_final[32];
     int id;
-    int tempo_operacao;
     struct node_log *next;
+    
 } node_log;
 
 typedef struct {
@@ -82,12 +65,18 @@ typedef struct {
 } stats_t;
 
 stats_t stats = {0, 0, 0, 0, 0};
+
 node_log *log_head = NULL;
 
+// [Example] Log structure
+// [ERRO] [ID: 1] [Tipo: DOMESTICO] [Status: CAIU] [Final: CANCELADO] [MOTIVO: TIMEOUT]
+// [SUCESSO] [ID: 2] [Tipo: INTERNACIONAL] [Status: DECOLOU] [Final: CONCLUÍDO] [MOTIVO: NONE]
+// [ERRO] [ID: 3] [Tipo: DOMESTICO] [Status: POUSOU] [Final: CANCELADO] [MOTIVO: DEADLOCK]
 typedef struct t_node_thread {
     pthread_t thread_id;
     struct t_node_thread *next;
 } t_node_thread;
+
 
 typedef struct t_node_aviao {
     int id;
@@ -98,54 +87,12 @@ typedef struct t_node_aviao {
     status status;
     recurso_tipo esperando_por;
     time_t tempo_inicio_espera;
-    time_t tempo_inicio_operacao;
     bool em_alerta_critico;
+
 } t_node_aviao;
 
 t_node_aviao *head = NULL;
-
-
-pthread_mutex_t ncurses_mutex;
-pthread_mutex_t list_mutex;
-pthread_mutex_t alocacao_mutex;
-pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t manager_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t recurso_liberado_cond = PTHREAD_COND_INITIALIZER;
-
-
-void configurar_simulacao() {
-    printf("\n");
-    printf(COR_TITULO"CONFIGURAÇÃO DA SIMULAÇÃO DE TRÁFEGO AÉREO\n" RESET COR_TITULO);
-    printf(COR_CONFIG "Por favor, configure os recursos do aeroporto:" RESET "\n\n");
-    
-    // Pistas
-    printf(COR_RECURSOS "Digite o número de PISTAS " RESET "(recomendado: 2-5): ");
-    scanf("%d", &N_PISTAS);
-
-    printf(COR_RECURSOS "Digite o número de PORTÕES " RESET "(recomendado: 3-8): ");
-    scanf("%d", &N_PORTOES);
-
-    printf(COR_RECURSOS "Digite o número máximo de TORRES " RESET "(recomendado: 1-3): ");
-    scanf("%d", &N_TORRE);
-
-    printf(COR_RECURSOS "Digite o TEMPO DE SIMULAÇÃO em segundos " RESET "(recomendado: 60-300): ");
-    scanf("%d", &TEMPO_SIMULACAO);
-
-    
-    printf("\n" COR_SUCESSO "✓ Configuração aplicada com sucesso!" RESET "\n");
-    printf(COR_CONFIG "═══ RESUMO DA CONFIGURAÇÃO ═══" RESET "\n");
-    printf(COR_RECURSOS "  Pistas: " RESET "%d\n", N_PISTAS);
-    printf(COR_RECURSOS "  Portões: " RESET "%d\n", N_PORTOES);
-    printf(COR_RECURSOS "  Torre (2 operações simultâneas cada torre): " RESET "%d\n", N_TORRE);
-    printf(COR_RECURSOS "  Tempo de simulação: " RESET "%d segundos (%.1f minutos)\n", TEMPO_SIMULACAO, TEMPO_SIMULACAO / 60.0);
-    printf("\n" COR_SUBTITULO "Pressione ENTER para iniciar a simulação..." RESET);
-    getchar(); 
-    getchar(); 
-    printf("\n");
-}
-
-
-void add_log_entry(const char *tag, int id, const char *tipo, const char *status_final, const char *final, const char *motivo, int tempo_operacao) {
+void add_log_entry(const char *tag, int id, const char *tipo, const char *status_final, const char *final, const char *motivo) {
     pthread_mutex_lock(&log_mutex);
     
     node_log *new_entry = malloc(sizeof(node_log));
@@ -155,7 +102,6 @@ void add_log_entry(const char *tag, int id, const char *tipo, const char *status
     snprintf(new_entry->final, sizeof(new_entry->final), "%s", final);
     snprintf(new_entry->motivo, sizeof(new_entry->motivo), "%s", motivo);
     new_entry->id = id;
-    new_entry->tempo_operacao = tempo_operacao;
     new_entry->next = log_head;
     log_head = new_entry;
 
@@ -179,62 +125,24 @@ void print_log() {
     
     node_log *current = log_head;
     node_log *free_node;
-    
-    fprintf(stderr, "\n%s=== LOG DE OPERAÇÕES ===%s\n", BG_CYAN, BG_RESET);
-    
     while (current != NULL) {
-        const char* cor_tag;
-        const char* cor_tipo;
-        
-        // Escolher cor baseada no resultado
-        if (strcmp(current->tag, "SUCESSO") == 0) {
-            cor_tag = BG_GREEN;
-        } else if (strcmp(current->tag, "ERRO") == 0) {
-            cor_tag = BG_RED;
-        } else {
-            cor_tag = BG_YELLOW;
-        }
-        
-        // Escolher cor baseada no tipo
-        if (strcmp(current->tipo, "DOMESTICO") == 0) {
-            cor_tipo = BG_BLUE;
-        } else {
-            cor_tipo = BG_MAGENTA;
-        }
-        
-        if (current->tempo_operacao > 0) {
-            fprintf(stderr,"%s[%s]%s %s[ID: %d]%s %s[Tipo: %s]%s %s[Status: %s]%s [Final: %s] [Motivo: %s] %s[Tempo: %ds]%s\n", 
-                   cor_tag, current->tag, BG_RESET,
-                   BG_WHITE, current->id, BG_RESET,
-                   cor_tipo, current->tipo, BG_RESET,
-                   BG_YELLOW, current->status_final, BG_RESET,
-                   current->final, current->motivo,
-                   BG_CYAN, current->tempo_operacao, BG_RESET);
-        } else {
-            fprintf(stderr,"%s[%s]%s %s[ID: %d]%s %s[Tipo: %s]%s %s[Status: %s]%s [Final: %s] [Motivo: %s]\n", 
-                   cor_tag, current->tag, BG_RESET,
-                   BG_WHITE, current->id, BG_RESET,
-                   cor_tipo, current->tipo, BG_RESET,
-                   BG_YELLOW, current->status_final, BG_RESET,
-                   current->final, current->motivo);
-        }
-        
+        fprintf(stderr,"[%s] [ID: %d] [Tipo: %s] [Status: %s] [Final: %s] [Motivo: %s]\n", 
+               current->tag, current->id, current->tipo, current->status_final, current->final, current->motivo);
         free_node = current;
         current = current->next;
         free(free_node);
     }
 
-    fprintf(stderr, "\n%s=== ESTATÍSTICAS ===%s\n", BG_CYAN, BG_RESET);
-    fprintf(stderr, "%sTempo de simulação:%s %d segundos\n", BG_WHITE, BG_RESET, TEMPO_SIMULACAO);
-    fprintf(stderr, "%sTotal de voos:%s %d\n", BG_WHITE, BG_RESET, stats.total_voos);
-    fprintf(stderr, "%sAviões com sucesso:%s %s%d%s\n", BG_WHITE, BG_RESET, BG_GREEN, stats.avioes_sucesso, BG_RESET);
-    fprintf(stderr, "%sAviões com falha:%s %s%d%s\n", BG_WHITE, BG_RESET, BG_RED, stats.avioes_falha, BG_RESET);
-    fprintf(stderr, "%sFalhas por deadlock:%s %s%d%s\n", BG_WHITE, BG_RESET, BG_RED, stats.falha_por_deadlock, BG_RESET);
-    fprintf(stderr, "%sFalhas por timeout:%s %s%d%s\n", BG_WHITE, BG_RESET, BG_RED, stats.falha_por_timeout, BG_RESET);
+    fprintf(stderr, "\nEstatísticas:\n");
+    fprintf(stderr, "Tempo de simulação: %d segundos\n", TEMPO_SIMULACAO);
+    fprintf(stderr, "Total de voos: %d\n", stats.total_voos);
+    fprintf(stderr, "Aviões com sucesso: %d\n", stats.avioes_sucesso);
+    fprintf(stderr, "Aviões com falha: %d\n", stats.avioes_falha);
+    fprintf(stderr, "Falhas por deadlock: %d\n", stats.falha_por_deadlock);
+    fprintf(stderr, "Falhas por timeout: %d\n", stats.falha_por_timeout);
 
     pthread_mutex_unlock(&log_mutex);
 }
-
 void update_list_index() {
     pthread_mutex_lock(&list_mutex);
     t_node_aviao *current = head;
@@ -255,8 +163,6 @@ t_node_aviao* add_plane_to_list(int id, int tipo) {
     new_node->tipo = tipo;
     new_node->status = EM_APROXIMACAO;
     new_node->em_alerta_critico = false;
-    new_node->tempo_inicio_operacao = time(NULL); // Inicializa cronômetro
-    
     if (head == NULL) {
         head = new_node;
         new_node->next = NULL;
@@ -291,6 +197,7 @@ void add_thread_to_list(t_node_thread **head, pthread_t thread_id) {
         }
         current->next = new_node;
     }
+
 }
 
 void remove_plane_from_list(int index) {
@@ -298,6 +205,7 @@ void remove_plane_from_list(int index) {
 
     t_node_aviao *current = head;
     t_node_aviao *previous = NULL;
+
 
     while (current != NULL) {
         if (current->index == index) {
@@ -321,7 +229,6 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
     pthread_mutex_lock(&manager_mutex);
     
     aviao->tempo_inicio_espera = time(NULL);
-    aviao->tempo_inicio_operacao = time(NULL);
     aviao->em_alerta_critico = false;
 
     while(true) {
@@ -374,10 +281,12 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
             return true;
         }
 
+
         aviao->esperando_por = tipo_desejado;
 
         if (aviao->em_alerta_critico) criticos_esperando++;
         else if (aviao->tipo == INTERNACIONAL) internacionais_nao_criticos_esperando++;
+        
 
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
@@ -397,8 +306,7 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
                 aviao->status = CAIU;
                 aviao->esperando_por = NENHUM;
                 pthread_mutex_unlock(&manager_mutex);
-                int tempo_total = (int)(time(NULL) - aviao->tempo_inicio_operacao);
-                add_log_entry("ERRO", aviao->id, (aviao->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", "CAIU", "CANCELADO", "TIMEOUT", tempo_total);
+                add_log_entry("ERRO", aviao->id, (aviao->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", "CAIU", "CANCELADO", "TIMEOUT");
                 return false;
             } else if (tempo_espera > TEMPO_ALERTA && !aviao->em_alerta_critico) {
                 aviao->em_alerta_critico = true;
@@ -407,7 +315,8 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
     }
 }
 
-void liberar_recurso(t_node_aviao *aviao, recurso_tipo tipo_a_liberar) {
+void liberar_recurso(t_node_aviao *aviao, recurso_tipo tipo_a_liberar)
+{
     pthread_mutex_lock(&manager_mutex);
 
     t_recurso *array_recurso = NULL;
@@ -437,10 +346,12 @@ void liberar_recurso(t_node_aviao *aviao, recurso_tipo tipo_a_liberar) {
             array_recurso[i].thread_id = 0;
             break;
         }
+
     }
     
     pthread_cond_broadcast(&recurso_liberado_cond);
     pthread_mutex_unlock(&manager_mutex);
+
 }
 
 void cleanup_liberar_recursos(void *arg){
@@ -480,20 +391,25 @@ void cleanup_liberar_recursos(void *arg){
 
     pthread_mutex_unlock(&list_mutex);
     update_list_index();
+
 }
 
-void print_aviao_list() {
+void print_aviao_list()
+{
     pthread_mutex_lock(&list_mutex);
     
     t_node_aviao *current = head;
 
-    while(current != NULL) {
+    while(current != NULL)
+    {
         printf("%d -> ", current->id);
         current = current->next;
+        
     }
 
     printf("\n");
     pthread_mutex_unlock(&list_mutex);
+
 }
 
 void tabprint(int level){
@@ -567,8 +483,7 @@ bool decolagem_domestico(void *arg) {
     liberar_recurso(aviao, PORTAO);
     liberar_recurso(aviao, PISTA);
 
-    int tempo_total = (int)(time(NULL) - aviao->tempo_inicio_operacao);
-    add_log_entry("SUCESSO", aviao->id, (aviao->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", "DECOLOU", "CONCLUÍDO", "NONE", tempo_total);
+    add_log_entry("SUCESSO", aviao->id, (aviao->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", "DECOLOU", "CONCLUÍDO", "NONE");
 
     return true;
 }
@@ -638,11 +553,11 @@ bool decolagem_internacional(void *arg) {
     liberar_recurso(aviao, PISTA);
     liberar_recurso(aviao, PORTAO);
 
-    int tempo_total = (int)(time(NULL) - aviao->tempo_inicio_operacao);
-    add_log_entry("SUCESSO", aviao->id, (aviao->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", "DECOLOU", "CONCLUÍDO", "NONE", tempo_total);
+    add_log_entry("SUCESSO", aviao->id, (aviao->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", "DECOLOU", "CONCLUÍDO", "NONE");
 
     return true;
 }
+
 
 void* voo_domestico(void *arg){
     t_node_aviao *aviao = (t_node_aviao *)arg;
@@ -661,6 +576,7 @@ void* voo_domestico(void *arg){
     return NULL;
 }
 
+
 void* voo_internacional(void *arg){
     t_node_aviao *aviao = (t_node_aviao *)arg;
 
@@ -673,11 +589,11 @@ void* voo_internacional(void *arg){
 
     pthread_cleanup_pop(0);
 
+
     remove_plane_from_list(aviao->index);
 
     return NULL;
 }
-
 bool dfs_ciclo_util(int u, int total_avioes, int grafo[][total_avioes], int estado[]) {
     estado[u] = 1; 
 
@@ -715,28 +631,17 @@ bool detectar_ciclo(int total_avioes, int grafo[][total_avioes], int estado[]) {
 }
 
 void deadlock_watcher(bool deadlock){
-    static WINDOW *win = NULL;
-    if (win == NULL) {
-        int largura = getmaxx(stdscr);
-        win = newwin(3, largura / 2, 0, largura / 2);  
-    }
-
     pthread_mutex_lock(&ncurses_mutex);
-    werase(win);
+    WINDOW *win = newwin(3, 30, 0, 50);
     box(win, 0, 0);
     if (deadlock) {
-        wattron(win, COLOR_PAIR(1));
-        mvwprintw(win, 1, 2, "DEADLOCK DETECTADO");
-        wattroff(win, COLOR_PAIR(1));
+        mvwprintw(win, 1, 1, "Deadlock detected!");
     } else {
-        wattron(win, COLOR_PAIR(2));
-        mvwprintw(win, 1, 2, "Nenhum deadlock");
-        wattroff(win, COLOR_PAIR(2));
+        mvwprintw(win, 1, 1, "No deadlock.");
     }
     wrefresh(win);
     pthread_mutex_unlock(&ncurses_mutex);
 }
-
 
 void* deadlock_monitor(void *arg) {
     while(1)
@@ -758,9 +663,9 @@ void* deadlock_monitor(void *arg) {
             current = current->next;
         }
 
-        memcpy(pistas_snapshot, pistas_rec, N_PISTAS * sizeof(t_recurso));
-        memcpy(portoes_snapshot, portoes_embarque_rec, N_PORTOES * sizeof(t_recurso));
-        memcpy(torre_snapshot, torre_rec, N_TORRE * 2 * sizeof(t_recurso));
+        memcpy(pistas_snapshot, pistas_rec, sizeof(pistas_rec));
+        memcpy(portoes_snapshot, portoes_embarque_rec, sizeof(portoes_embarque_rec));
+        memcpy(torre_snapshot, torre_rec, sizeof(torre_rec));
 
         pthread_mutex_unlock(&list_mutex);
         pthread_mutex_unlock(&manager_mutex);
@@ -796,6 +701,7 @@ void* deadlock_monitor(void *arg) {
                             for (int k = 0; k < total_avioes; k++) {
                                 if (pthread_equal(snapshot_avioes[k]->thread_id, dono_id)) {
                                     grafo[i][k] = 1;
+                                    
                                 }
                             }
                         }
@@ -825,176 +731,125 @@ void* deadlock_monitor(void *arg) {
                     else if (vitima->status == DESEMBARCOU) snprintf(tipo_str, sizeof(tipo_str), "DESEMBARCOU");
                     else if (vitima->status == DECOLOU) snprintf(tipo_str, sizeof(tipo_str), "DECOLOU");
                     else if (vitima->status == CAIU) snprintf(tipo_str, sizeof(tipo_str), "CAIU");
-                    
-                    int tempo_total = (int)(time(NULL) - vitima->tempo_inicio_operacao);
-                    add_log_entry("ERRO", vitima->id, (vitima->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", tipo_str, "CANCELADO", "DEADLOCK", tempo_total);
+                    add_log_entry("ERRO", vitima->id, (vitima->tipo == DOMESTICO) ? "DOMESTICO" : "INTERNACIONAL", tipo_str, "CANCELADO", "DEADLOCK");
                     pthread_cancel(vitima->thread_id);
+
                 }
             } else {
                 deadlock_watcher(false);
             }
+
         }
     }
 }
 
 void* resource_watcher(void *arg) {
-    int largura = getmaxx(stdscr);
-    WINDOW *win = newwin(4, largura / 2, 0, 0);
+
+    WINDOW *win = newwin(5, 50, 0, 0);
+    box(win, 0, 0);
 
     while (1) {
-        int pistas_ocupadas = 0, portoes_ocupados = 0, torres_ocupadas = 0;
-        int total_avioes_ativos = 0;
+        int valor_pistas = 0, valor_portoes = 0, valor_torre = 0;
 
         pthread_mutex_lock(&ncurses_mutex);
-        werase(win);
-        box(win, 0, 0);
-
         pthread_mutex_lock(&manager_mutex);
-        pthread_mutex_lock(&list_mutex);
-        
-        t_node_aviao *current = head;
-        while (current != NULL) {
-            total_avioes_ativos++;
-            current = current->next;
+
+        for(int i = 0; i < N_PISTAS; i++) {
+            if (pistas_rec[i].em_use) {
+                valor_pistas++;
+            }
         }
-        
-        for(int i = 0; i < N_PISTAS; i++)
-            if (pistas_rec[i].em_use) pistas_ocupadas++;
-        for(int i = 0; i < N_PORTOES; i++)
-            if (portoes_embarque_rec[i].em_use) portoes_ocupados++;
-        for(int i = 0; i < N_TORRE * 2; i++)
-            if (torre_rec[i].em_use) torres_ocupadas++;
-            
-        pthread_mutex_unlock(&list_mutex);
+        for(int i = 0; i < N_PORTOES; i++) {
+            if (portoes_embarque_rec[i].em_use) {
+                valor_portoes++;
+            }
+        }
+        for(int i = 0; i < N_TORRE * 2; i++) {
+            if (torre_rec[i].em_use) {
+                valor_torre++;
+            }
+        }
         pthread_mutex_unlock(&manager_mutex);
 
-        if (pistas_ocupadas > total_avioes_ativos || 
-            portoes_ocupados > total_avioes_ativos || 
-            torres_ocupadas > total_avioes_ativos) {
-            
-            wattron(win, COLOR_PAIR(1)); 
-            mvwprintw(win, 0, 2, " ERRO: Estado inconsistente! ");
-            mvwprintw(win, 1, 2, "Aviões: %d | Pistas: %d/%d | Portões: %d/%d | Torres: %d/%d", 
-                     total_avioes_ativos,
-                     pistas_ocupadas, N_PISTAS,
-                     portoes_ocupados, N_PORTOES, 
-                     torres_ocupadas, N_TORRE * 2);
-            wattroff(win, COLOR_PAIR(1));
-        } else {
-            mvwprintw(win, 0, 2, " Recursos em uso ");
-            mvwprintw(win, 1, 2, "Aviões ativos: %d", total_avioes_ativos);
-            mvwprintw(win, 2, 2, "Pistas: %d/%d | Portões: %d/%d | Torres: %d/%d", 
-                     pistas_ocupadas, N_PISTAS,
-                     portoes_ocupados, N_PORTOES,
-                     torres_ocupadas, N_TORRE * 2);
-        }
-
+        mvwprintw(win, 0, 15, "Recursos disponíveis");
+        mvwprintw(win, 1, 2, "Pistas: %d / %d", (N_PISTAS - valor_pistas), N_PISTAS);
+        mvwprintw(win, 2, 2, "Portões: %d / %d", (N_PORTOES - valor_portoes), N_PORTOES);
+        mvwprintw(win, 3, 2, "Torre de Controle: %d / %d", valor_torre, (2 * N_TORRE));
         wrefresh(win);
         pthread_mutex_unlock(&ncurses_mutex);
         usleep(100000);
     }
 
+    endwin();
     return NULL;
 }
 
 void* plane_watcher(void *arg) {
-    int altura = getmaxy(stdscr) - 3;  
-    int largura = getmaxx(stdscr);
-    WINDOW *win = newwin(altura, largura, 4, 0);  
 
+    WINDOW *win = newwin(0,50,5,0);
     char msg[128];
 
     while(1) {
         pthread_mutex_lock(&ncurses_mutex);
         t_node_aviao *avioes = head;
         werase(win);
-        mvwprintw(win, 0, 2, " Aviões em voo ");
+        box(win,0,0);
+        mvwprintw(win, 0, 15, "Aviões em Voo");
 
         while(avioes != NULL){
-            if(avioes->index > altura - 2) break;
 
-            char type_str[16];
-            snprintf(type_str, sizeof(type_str),
-                avioes->tipo == DOMESTICO ? "Doméstico" : "Internacional");
+            if(avioes->index > 15) break;
 
+            char type_str[32];
+            switch (avioes->tipo)
+            {
+            case DOMESTICO:
+                snprintf(type_str, sizeof(type_str), "Doméstico");
+                break;
+            case INTERNACIONAL:
+                snprintf(type_str, sizeof(type_str), "Internacional");
+                break;
+            }
             char status_str[32];
-            switch (avioes->status) {
-                case EM_APROXIMACAO: snprintf(status_str, sizeof(status_str), "Aproximação"); break;
-                case POUSOU: snprintf(status_str, sizeof(status_str), "Pousou"); break;
-                case DESEMBARCOU: snprintf(status_str, sizeof(status_str), "Desembarcou"); break;
-                case DECOLOU: snprintf(status_str, sizeof(status_str), "Decolou"); break;
-                case CAIU: snprintf(status_str, sizeof(status_str), "Caiu"); break;
+            switch (avioes->status)
+            {
+                case EM_APROXIMACAO:
+                    snprintf(status_str, sizeof(status_str), "Em Aproximação");
+                    break;
+                case POUSOU: 
+                    snprintf(status_str, sizeof(status_str), "Pousou");
+                    break;
+                case DESEMBARCOU:
+                    snprintf(status_str, sizeof(status_str), "Desembarcou");
+                    break;
+                case DECOLOU:
+                    snprintf(status_str, sizeof(status_str), "Decolou");
+                    break;
+                case CAIU:
+                    snprintf(status_str, sizeof(status_str), "Caiu");
+                    break;
             }
 
-            int tempo = (int)(time(NULL) - avioes->tempo_inicio_operacao);
-            snprintf(msg, sizeof(msg), "ID: %d | Tipo: %s | Status: %s (%ds)",
-                avioes->id, type_str, status_str, tempo);
-
-            int color = 5;  // branco padrão
-            if (avioes->status == EM_APROXIMACAO) color = 4;
-            else if (avioes->status == POUSOU) color = 3;
-            else if (avioes->status == DESEMBARCOU || avioes->status == DECOLOU) color = 2;
-            else if (avioes->status == CAIU) color = 1;
-
-            wattron(win, COLOR_PAIR(color));
+            snprintf(msg, sizeof(msg), "ID: %d, Tipo: %s, Status: %s", avioes->id, type_str, status_str);
             mvwprintw(win, avioes->index + 1, 2, "%s", msg);
-            wattroff(win, COLOR_PAIR(color));
-
             avioes = avioes->next;
         }
-
+        
         wrefresh(win);
         pthread_mutex_unlock(&ncurses_mutex);
         usleep(100000);
     }
-
+ 
     return NULL;
 }
 
 
+
 int main(int argc, char *argv[]) {
+
     setlocale(LC_ALL, "");
 
-    if (argc == 5) {
-        N_PISTAS = atoi(argv[1]);
-        N_PORTOES = atoi(argv[2]);
-        N_TORRE = atoi(argv[3]);
-        TEMPO_SIMULACAO = atoi(argv[4]);
-
-        if (N_PISTAS < 1 || N_PISTAS > 10 ||
-            N_PORTOES < 1 || N_PORTOES > 15 ||
-            N_TORRE < 1 || N_TORRE > 5 ||
-            TEMPO_SIMULACAO < 30 || TEMPO_SIMULACAO > 600) {
-            fprintf(stderr, COR_ALERTA "Erro: Argumentos inválidos fornecidos.\n" RESET);
-            exit(EXIT_FAILURE);
-        }
-
-        printf(COR_SUCESSO "✓ Modo automático com argumentos ativado.\n" RESET);
-        printf(COR_RECURSOS "  Pistas: %d, Portões: %d, Torre: %d, Tempo: %ds\n\n" RESET,
-               N_PISTAS, N_PORTOES, N_TORRE, TEMPO_SIMULACAO);
-    } else if (argc == 1) {
-        configurar_simulacao();
-    } else {
-        fprintf(stderr, COR_ALERTA "Uso: ./trabalho [PISTAS PORTOES TORRE TEMPO]\n" RESET);
-        exit(EXIT_FAILURE);
-    }
-
-    pistas_rec = malloc(N_PISTAS * sizeof(t_recurso));
-    portoes_embarque_rec = malloc(N_PORTOES * sizeof(t_recurso));
-    torre_rec = malloc(N_TORRE * 2 * sizeof(t_recurso));
-
-    if (!pistas_rec || !portoes_embarque_rec || !torre_rec) {
-        fprintf(stderr, COR_ALERTA "Erro ao alocar memória para recursos!\n" RESET);
-        exit(EXIT_FAILURE);
-    }
-
     initscr();
-    start_color();
-    init_pair(1, COLOR_RED, COLOR_BLACK);
-    init_pair(2, COLOR_GREEN, COLOR_BLACK);
-    init_pair(3, COLOR_YELLOW, COLOR_BLACK);
-    init_pair(4, COLOR_CYAN, COLOR_BLACK);
-    init_pair(5, COLOR_WHITE, COLOR_BLACK);
     noecho();
     curs_set(0);
 
@@ -1006,7 +861,9 @@ int main(int argc, char *argv[]) {
     pthread_create(&thr_resource_watcher, NULL, resource_watcher, NULL); 
     pthread_create(&thr_plane_watcher, NULL, plane_watcher, NULL);
     pthread_create(&thr_deadlock_monitor, NULL, deadlock_monitor, NULL);
-    sleep(1);
+    sleep(1); // Aguardar o watcher iniciar
+   
+    t_node_thread *plane_threads = NULL;
 
     for (int i = 0; i < N_PISTAS; i++) {
         pistas_rec[i].em_use = false;
@@ -1021,16 +878,16 @@ int main(int argc, char *argv[]) {
         torre_rec[i].thread_id = 0;
     }
 
-    t_node_thread *plane_threads = NULL;
     time_t tempo_inicio = time(NULL);
     srand(tempo_inicio);
     int tempo_simulacao_segundos = TEMPO_SIMULACAO;
     int id_aviao = 0;
     bool limite_excedido = false;
-
-    while ((time(NULL) - tempo_inicio) < tempo_simulacao_segundos) {
+    while ((time(NULL) - tempo_inicio) < tempo_simulacao_segundos)
+    {
         id_aviao++;
         pthread_t nova_thread_aviao;
+
         t_node_aviao *aviao = NULL;
 
         if (id_aviao > MAX_AVIOES) {
@@ -1038,25 +895,28 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        if (rand() % 2 == 0) {
+        if (rand() % 2 == 0)
+        {
             aviao = add_plane_to_list(id_aviao, DOMESTICO);
             pthread_create(&nova_thread_aviao, NULL, voo_domestico, (void*)aviao);
-        } else {
+        }
+        else
+        {
             aviao = add_plane_to_list(id_aviao, INTERNACIONAL);
             pthread_create(&nova_thread_aviao, NULL, voo_internacional, (void*)aviao);
         }
-
         pthread_mutex_lock(&list_mutex);
-        add_thread_to_list(&plane_threads, nova_thread_aviao);
+        add_thread_to_list(&plane_threads,nova_thread_aviao);
         aviao->thread_id = nova_thread_aviao;
         pthread_mutex_unlock(&list_mutex);
 
-        usleep((500 + rand() % 500) * (5000 / FREQUENCIA_DE_AVIAO));
+        usleep((500+ rand() % 500) * (5000/FREQUENCIA_DE_AVIAO));
+        
     }
 
     t_node_thread *current = plane_threads;
-    if (!limite_excedido) {
-        while (current != NULL) {
+    if (!limite_excedido){
+        while(current != NULL) {
             pthread_cancel(current->thread_id);
             current = current->next;
         }
@@ -1070,19 +930,15 @@ int main(int argc, char *argv[]) {
         current = current->next;
         free(temp);
     }
-
+    
     pthread_cancel(thr_plane_watcher);
     pthread_cancel(thr_resource_watcher);
     pthread_cancel(thr_deadlock_monitor);
-
+    
     endwin();
 
     print_log();
 
-    // Liberar recursos
-    free(pistas_rec);
-    free(portoes_embarque_rec);
-    free(torre_rec);
 
     return 0;
 }
