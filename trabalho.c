@@ -1251,7 +1251,6 @@ int main(int argc, char *argv[]) {
     t_node_thread *current = plane_threads;
     if (!limite_excedido) {
         while (current != NULL) {
-            pthread_cancel(current->thread_id);
             current = current->next;
         }
     }
