@@ -41,7 +41,7 @@ int N_TORRE;
 int TEMPO_SIMULACAO;
 #define TEMPO_ALERTA 60
 #define TEMPO_CRITICO 90
-#define FREQUENCIA_DE_AVIAO 10
+#define FREQUENCIA_DE_AVIAO 3
 #define MAX_AVIOES 50
 
 int avioes_domesticos_ativos = 0;
@@ -118,7 +118,6 @@ void configurar_simulacao() {
     printf(COR_TITULO"CONFIGURAÇÃO DA SIMULAÇÃO DE TRÁFEGO AÉREO\n" RESET COR_TITULO);
     printf(COR_CONFIG "Por favor, configure os recursos do aeroporto:" RESET "\n\n");
     
-    // Pistas
     printf(COR_RECURSOS "Digite o número de PISTAS " RESET "(recomendado: 2-5): ");
     scanf("%d", &N_PISTAS);
 
@@ -186,7 +185,6 @@ void print_log() {
         const char* cor_tag;
         const char* cor_tipo;
         
-        // Escolher cor baseada no resultado
         if (strcmp(current->tag, "SUCESSO") == 0) {
             cor_tag = BG_GREEN;
         } else if (strcmp(current->tag, "ERRO") == 0) {
@@ -195,7 +193,6 @@ void print_log() {
             cor_tag = BG_YELLOW;
         }
         
-        // Escolher cor baseada no tipo
         if (strcmp(current->tipo, "DOMESTICO") == 0) {
             cor_tipo = BG_BLUE;
         } else {
@@ -255,7 +252,7 @@ t_node_aviao* add_plane_to_list(int id, int tipo) {
     new_node->tipo = tipo;
     new_node->status = EM_APROXIMACAO;
     new_node->em_alerta_critico = false;
-    new_node->tempo_inicio_operacao = time(NULL); // Inicializa cronômetro
+    new_node->tempo_inicio_operacao = time(NULL); 
     
     if (head == NULL) {
         head = new_node;
@@ -320,18 +317,28 @@ void remove_plane_from_list(int index) {
 int calcular_prioridade(t_node_aviao *aviao) {
     time_t tempo_espera = time(NULL) - aviao->tempo_inicio_espera;
     
-    if (tempo_espera >= TEMPO_CRITICO) {
-        return 10;
+    if (tempo_espera >= TEMPO_ALERTA) {
+        return 1; // Menor valor = maior prioridade
     }
+    
+    if (aviao->tipo == DOMESTICO && tempo_espera >= 60) {
+        int bonus_tempo = (tempo_espera - 60) / 20; 
+        return 2 - bonus_tempo;
+    }
+    
     if (aviao->tipo == INTERNACIONAL) {
-        int bonus_tempo = tempo_espera / 30; // A cada 30s, ganha + prioridade
-        return 2 + bonus_tempo;
-    } else {
-        int bonus_tempo = tempo_espera / 20; // A cada 20s, ganha + prioridade
-        return 4 + bonus_tempo;
+        if (tempo_espera < 60) {
+            int bonus_tempo = tempo_espera / 20;
+            return 5 - bonus_tempo;
+        } else {
+            int bonus_tempo = (tempo_espera - 60) / 30;
+            return 3 - bonus_tempo;
+        }
+    } else { 
+        int bonus_tempo = tempo_espera / 15;
+        return 8 - bonus_tempo;
     }
 }
-
 
 bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
     pthread_mutex_lock(&manager_mutex);
@@ -365,12 +372,21 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
         bool deve_esperar_por_prioridade = false;
         int minha_prioridade = calcular_prioridade(aviao);
         
+        time_t tempo_espera_atual = time(NULL) - aviao->tempo_inicio_espera;
+
+        
         pthread_mutex_lock(&list_mutex);
         t_node_aviao *current = head;
         while (current != NULL) {
             if (current != aviao && current->esperando_por == tipo_desejado) {
                 int prioridade_outro = calcular_prioridade(current);
+                time_t tempo_espera_outro = time(NULL) - current->tempo_inicio_espera;
+
                 if (prioridade_outro < minha_prioridade) { 
+                    deve_esperar_por_prioridade = true;
+                    break;
+                } 
+                else if (prioridade_outro == minha_prioridade && tempo_espera_outro > tempo_espera_atual) {
                     deve_esperar_por_prioridade = true;
                     break;
                 }
@@ -387,8 +403,8 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
                     break;
                 }
             }
-        }
-        
+            
+        } 
         if (recurso_idx != -1) {
             array_recurso[recurso_idx].em_use = true;
             array_recurso[recurso_idx].thread_id = aviao->thread_id;
@@ -415,7 +431,7 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
 
             if(tempo_espera == 0) aviao->tempo_inicio_espera = time(NULL);
 
-            if (tempo_espera > TEMPO_CRITICO + 30) { 
+            if (tempo_espera > TEMPO_CRITICO) { 
                 aviao->status = CAIU;
                 aviao->esperando_por = NENHUM;
                 pthread_mutex_unlock(&manager_mutex);
@@ -426,6 +442,7 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
         }
     }
 }
+
 
 
 void liberar_recurso(t_node_aviao *aviao, recurso_tipo tipo_a_liberar) {
@@ -952,7 +969,7 @@ void* plane_watcher(void *arg) {
             snprintf(msg, sizeof(msg), "ID: %d | Tipo: %s | Status: %s (%ds)",
                 avioes->id, type_str, status_str, tempo);
 
-            int color = 5;  // branco padrão
+            int color = 5; 
             if (avioes->status == EM_APROXIMACAO) color = 4;
             else if (avioes->status == POUSOU) color = 3;
             else if (avioes->status == DESEMBARCOU || avioes->status == DECOLOU) color = 2;
@@ -1139,7 +1156,7 @@ int main(int argc, char *argv[]) {
         if (N_PISTAS < 1 || N_PISTAS > 10 ||
             N_PORTOES < 1 || N_PORTOES > 15 ||
             N_TORRE < 1 || N_TORRE > 5 ||
-            TEMPO_SIMULACAO < 30 || TEMPO_SIMULACAO > 600) {
+            TEMPO_SIMULACAO < 10 || TEMPO_SIMULACAO > 600) {
             fprintf(stderr, COR_ALERTA "Erro: Argumentos inválidos fornecidos.\n" RESET);
             exit(EXIT_FAILURE);
         }
@@ -1257,7 +1274,6 @@ int main(int argc, char *argv[]) {
 
     print_log();
 
-    // Liberar recursos
     free(pistas_rec);
     free(portoes_embarque_rec);
     free(torre_rec);
