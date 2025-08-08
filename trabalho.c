@@ -739,7 +739,7 @@ void deadlock_watcher(bool deadlock){
     static WINDOW *win = NULL;
     if (win == NULL) {
         int largura = getmaxx(stdscr);
-        win = newwin(3, largura / 2, 0, largura / 2);  
+        win = newwin(3, largura / 4, 0, largura / 2);  
     }
 
     pthread_mutex_lock(&ncurses_mutex);
@@ -921,7 +921,8 @@ void* resource_watcher(void *arg) {
 void* plane_watcher(void *arg) {
     int altura = getmaxy(stdscr) - 3;  
     int largura = getmaxx(stdscr);
-    WINDOW *win = newwin(altura, largura, 4, 0);  
+    WINDOW *win = newwin(altura, largura / 2, 4, 0);  
+ 
 
     char msg[128];
 
@@ -967,6 +968,159 @@ void* plane_watcher(void *arg) {
         wrefresh(win);
         pthread_mutex_unlock(&ncurses_mutex);
         usleep(100000);
+    }
+
+    return NULL;
+}
+
+void* priority_queue_monitor(void *arg) {
+    int altura = getmaxy(stdscr);
+    static WINDOW *win = NULL;
+    if (win == NULL) {
+        int largura = getmaxx(stdscr);
+        win = newwin(70, largura / 4, 0, (3 * largura) / 4);  
+    }
+
+    while (1) {
+        pthread_mutex_lock(&ncurses_mutex);
+        pthread_mutex_lock(&list_mutex);
+
+        werase(win);
+        box(win, 0, 0);
+        mvwprintw(win, 0, 2, " FILA DE PRIORIDADE ");
+
+        t_node_aviao *esperando_pista[50];
+        t_node_aviao *esperando_portao[50];
+        t_node_aviao *esperando_torre[50];
+        int count_pista = 0, count_portao = 0, count_torre = 0;
+
+        t_node_aviao *current = head;
+        while (current != NULL) {
+            if (current->esperando_por == PISTA && count_pista < 50) {
+                esperando_pista[count_pista++] = current;
+            } else if (current->esperando_por == PORTAO && count_portao < 50) {
+                esperando_portao[count_portao++] = current;
+            } else if (current->esperando_por == TORRE && count_torre < 50) {
+                esperando_torre[count_torre++] = current;
+            }
+            current = current->next;
+        }
+
+        for (int i = 0; i < count_pista - 1; i++) {
+            for (int j = 0; j < count_pista - i - 1; j++) {
+                if (calcular_prioridade(esperando_pista[j]) > calcular_prioridade(esperando_pista[j + 1])) {
+                    t_node_aviao *temp = esperando_pista[j];
+                    esperando_pista[j] = esperando_pista[j + 1];
+                    esperando_pista[j + 1] = temp;
+                }
+            }
+        }
+
+        for (int i = 0; i < count_portao - 1; i++) {
+            for (int j = 0; j < count_portao - i - 1; j++) {
+                if (calcular_prioridade(esperando_portao[j]) > calcular_prioridade(esperando_portao[j + 1])) {
+                    t_node_aviao *temp = esperando_portao[j];
+                    esperando_portao[j] = esperando_portao[j + 1];
+                    esperando_portao[j + 1] = temp;
+                }
+            }
+        }
+
+        for (int i = 0; i < count_torre - 1; i++) {
+            for (int j = 0; j < count_torre - i - 1; j++) {
+                if (calcular_prioridade(esperando_torre[j]) > calcular_prioridade(esperando_torre[j + 1])) {
+                    t_node_aviao *temp = esperando_torre[j];
+                    esperando_torre[j] = esperando_torre[j + 1];
+                    esperando_torre[j + 1] = temp;
+                }
+            }
+        }
+
+        int linha = 2;
+        int max_linhas = altura - 6; 
+
+        if (count_pista > 0) {
+            wattron(win, COLOR_PAIR(4)); 
+            mvwprintw(win, linha++, 2, "=== PISTA ===");
+            wattroff(win, COLOR_PAIR(4));
+            
+            for (int i = 0; i < count_pista && linha < max_linhas; i++) {
+                t_node_aviao *aviao = esperando_pista[i];
+                int prioridade = calcular_prioridade(aviao);
+                int tempo_espera = (int)(time(NULL) - aviao->tempo_inicio_espera);
+                
+                int cor = 5; 
+                if (prioridade <= 2) cor = 1; 
+                else if (prioridade <= 4) cor = 3; 
+                else if (aviao->tipo == INTERNACIONAL) cor = 6; 
+                else cor = 4; 
+                
+                wattron(win, COLOR_PAIR(cor));
+                mvwprintw(win, linha++, 4, "#%d: ID%d %s P=%d (%ds)",
+                         i+1, aviao->id,
+                         aviao->tipo == DOMESTICO ? "DOM" : "INT",
+                         prioridade, tempo_espera);
+                wattroff(win, COLOR_PAIR(cor));
+            }
+            linha++;
+        }
+
+        if (count_portao > 0 && linha < max_linhas) {
+            wattron(win, COLOR_PAIR(4));
+            mvwprintw(win, linha++, 2, "=== PORTÃO ===");
+            wattroff(win, COLOR_PAIR(4));
+            
+            for (int i = 0; i < count_portao && linha < max_linhas; i++) {
+                t_node_aviao *aviao = esperando_portao[i];
+                int prioridade = calcular_prioridade(aviao);
+                int tempo_espera = (int)(time(NULL) - aviao->tempo_inicio_espera);
+                
+                int cor = 5;
+                if (prioridade <= 2) cor = 1;
+                else if (prioridade <= 4) cor = 3;
+                else if (aviao->tipo == INTERNACIONAL) cor = 6;
+                else cor = 4;
+                
+                wattron(win, COLOR_PAIR(cor));
+                mvwprintw(win, linha++, 4, "#%d: ID%d %s P=%d (%ds)",
+                         i+1, aviao->id,
+                         aviao->tipo == DOMESTICO ? "DOM" : "INT",
+                         prioridade, tempo_espera);
+                wattroff(win, COLOR_PAIR(cor));
+            }
+            linha++;
+        }
+
+        if (count_torre > 0 && linha < max_linhas) {
+            wattron(win, COLOR_PAIR(4));
+            mvwprintw(win, linha++, 2, "=== TORRE ===");
+            wattroff(win, COLOR_PAIR(4));
+            
+            for (int i = 0; i < count_torre && linha < max_linhas; i++) {
+                t_node_aviao *aviao = esperando_torre[i];
+                int prioridade = calcular_prioridade(aviao);
+                int tempo_espera = (int)(time(NULL) - aviao->tempo_inicio_espera);
+                
+                int cor = 5;
+                if (prioridade <= 2) cor = 1;
+                else if (prioridade <= 4) cor = 3;
+                else if (aviao->tipo == INTERNACIONAL) cor = 6;
+                else cor = 4;
+                
+                wattron(win, COLOR_PAIR(cor));
+                mvwprintw(win, linha++, 4, "#%d: ID%d %s P=%d (%ds)",
+                         i+1, aviao->id,
+                         aviao->tipo == DOMESTICO ? "DOM" : "INT",
+                         prioridade, tempo_espera);
+                wattroff(win, COLOR_PAIR(cor));
+            }
+        }
+
+        wrefresh(win);
+        pthread_mutex_unlock(&list_mutex);
+        pthread_mutex_unlock(&ncurses_mutex);
+        
+        usleep(500000); 
     }
 
     return NULL;
@@ -1024,9 +1178,11 @@ int main(int argc, char *argv[]) {
     pthread_t thr_plane_watcher;
     pthread_t thr_resource_watcher;
     pthread_t thr_deadlock_monitor;
+    pthread_t thr_priority_queue_monitor;
     pthread_create(&thr_resource_watcher, NULL, resource_watcher, NULL); 
     pthread_create(&thr_plane_watcher, NULL, plane_watcher, NULL);
     pthread_create(&thr_deadlock_monitor, NULL, deadlock_monitor, NULL);
+    pthread_create(&thr_priority_queue_monitor, NULL, priority_queue_monitor, NULL);
     sleep(1);
 
     for (int i = 0; i < N_PISTAS; i++) {
@@ -1095,6 +1251,7 @@ int main(int argc, char *argv[]) {
     pthread_cancel(thr_plane_watcher);
     pthread_cancel(thr_resource_watcher);
     pthread_cancel(thr_deadlock_monitor);
+    pthread_cancel(thr_priority_queue_monitor);
 
     endwin();
 
