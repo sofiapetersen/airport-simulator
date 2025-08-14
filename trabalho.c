@@ -41,8 +41,8 @@ int N_TORRE;
 int TEMPO_SIMULACAO;
 #define TEMPO_ALERTA 60
 #define TEMPO_CRITICO 90
-#define FREQUENCIA_DE_AVIAO 3
-#define MAX_AVIOES 50
+#define FREQUENCIA_DE_AVIAO 2
+#define MAX_AVIOES 200
 
 int avioes_domesticos_ativos = 0;
 int avioes_internacionais_ativos = 0;
@@ -431,7 +431,7 @@ bool solicitar_recurso(t_node_aviao *aviao, recurso_tipo tipo_desejado) {
 
             if(tempo_espera == 0) aviao->tempo_inicio_espera = time(NULL);
 
-            if (tempo_espera > TEMPO_CRITICO) { 
+            if (tempo_espera > TEMPO_CRITICO && aviao->status == EM_APROXIMACAO) { 
                 aviao->status = CAIU;
                 aviao->esperando_por = NENHUM;
                 pthread_mutex_unlock(&manager_mutex);
