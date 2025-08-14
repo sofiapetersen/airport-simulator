@@ -5365,4 +5365,171 @@
 4404 : Processo 5410627 Pronto -> Exec
 4405 : Processo 5410627 Exec -> Pronto por tempo
 4406 : Processo 5410754 Pronto -> Exec
-4407 : Processo 5410754 Exec -> Pronto
+4407 : Processo 5410754 Exec -> Pronto por tempo
+4408 : Processo 5410627 Pronto -> Exec
+4409 : Processo 5410627 Exec -> Pronto por tempo
+4410 : Processo 5410754 Pronto -> Exec
+4411 : Processo 5410754 Exec -> Pronto por tempo
+4412 : Processo 5410627 Pronto -> Exec
+4413 : Processo 5410627 Exec -> Pronto por tempo
+4414 : Processo 5410754 Pronto -> Exec
+4415 : Processo 5410754 Exec -> Pronto por tempo
+4416 : Processo 5410627 Pronto -> Exec
+4417 : Processo 5410627 Exec -> Pronto por tempo
+4418 : Processo 5410754 Pronto -> Exec
+4419 : Processo 5410754 Exec -> Pronto por tempo
+4420 : Processo 5410627 Pronto -> Exec
+4421 : Processo 5410627 Exec -> Pronto por tempo
+4422 : Processo 5417136 swap in
+4422 : Processo 5417136 HwPF - Pagefile0
+4422 : Processo 5417136 HwPF - Pagefile1
+4422 : Lista de pags livres menor que80%
+4422 : Iniciando Swap
+4422 : Processo 5429598 IO outswapped
+4422 : Processo 5417136 HwPF - Pagefile2
+4422 : Processo 5417136 HwPF - Pagefile3
+4422 : Processo 5417136 HwPF - Pagefile4
+4422 : Processo 5417136 liberando pagefile alocado
+4422 : Processo 5417136 Pronto -> Exec
+4423 : Processo 5417136 Exec -> Pronto por tempo
+4424 : Processo 5417136 Pronto -> Exec
+4424 : Processo 5417136 Exec -> I/O
+4425 : Processo 5410754 Pronto -> Exec
+4426 : Processo 5410754 Exec -> Pronto por tempo
+4427 : Processo 5410627 Pronto -> Exec
+4428 : Processo 5410627 Exec -> Pronto por tempo
+4429 : Processo 5410754 Pronto -> Exec
+4430 : Processo 5410754 Exec -> Pronto por tempo
+4431 : Processo 5410627 Pronto -> Exec
+4432 : Processo 5410627 Exec -> Pronto por tempo
+4433 : Processo 5410754 Pronto -> Exec
+4434 : Processo 5410754 Exec -> Pronto por tempo
+4435 : Processo 5410627 Pronto -> Exec
+4436 : Processo 5410627 Exec -> Pronto por tempo
+4437 : Processo 5410754 Pronto -> Exec
+4438 : Processo 5410754 Exec -> Pronto por tempo
+4439 : Processo 5421483 swap in
+4439 : Processo 5421483 HwPF - Pagefile0
+4439 : Processo 5421483 HwPF - Pagefile1
+4439 : Lista de pags livres menor que80%
+4439 : Iniciando Swap
+4439 : Processo 5417136 IO outswapped
+4439 : Processo 5421483 HwPF - Pagefile2
+4439 : Processo 5421483 HwPF - Pagefile3
+4439 : Processo 5421483 HwPF - Pagefile4
+4439 : Processo 5421483 liberando pagefile alocado
+4439 : Processo 5421483 Pronto -> Exec
+4440 : Processo 5421483 Exec -> Pronto por tempo
+4441 : Processo 5421483 Pronto -> Exec
+4441 : Processo 5421483 Exec -> I/O
+4442 : Processo 5410627 Pronto -> Exec
+4443 : Processo 5410627 Exec -> Pronto por tempo
+4444 : Processo 5410754 Pronto -> Exec
+4445 : Processo 5410754 Exec -> Pronto por tempo
+4446 : Processo 5410627 Pronto -> Exec
+4447 : Processo 5410627 Exec -> Pronto por tempo
+4448 : Processo 5410754 Pronto -> Exec
+4449 : Processo 5410754 Exec -> Pronto por tempo
+4450 : Processo 5410627 Pronto -> Exec
+4451 : Processo 5410627 Exec -> Pronto por tempo
+4452 : Processo 5410754 Pronto -> Exec
+4453 : Processo 5410754 Exec -> Pronto por tempo
+4454 : Processo 5410627 Pronto -> Exec
+4455 : Processo 5410627 Exec -> Pronto por tempo
+4456 : Processo 5410754 Pronto -> Exec
+4457 : Processo 5410754 Exec -> Pronto por tempo
+4458 : Processo 5429486 Pronto -> Exec
+4458 : Processo 5429486 Exec -> I/O
+4459 : Processo 5410627 Pronto -> Exec
+4460 : Processo 5410627 Exec -> Pronto por tempo
+4461 : Processo 5410754 Pronto -> Exec
+4462 : Processo 5410754 Exec -> Pronto por tempo
+4463 : Processo 5410627 Pronto -> Exec
+4464 : Processo 5410627 Exec -> Pronto por tempo
+4465 : Processo 5410754 Pronto -> Exec
+4466 : Processo 5410754 Exec -> Pronto por tempo
+4467 : Processo 5410627 Pronto -> Exec
+4468 : Processo 5410627 Exec -> Pronto por tempo
+4469 : Processo 5410754 Pronto -> Exec
+4470 : Processo 5410754 Exec -> Pronto por tempo
+4471 : Processo 5410627 Pronto -> Exec
+4472 : Processo 5410627 Exec -> Pronto por tempo
+4473 : Processo 5410754 Pronto -> Exec
+4474 : Processo 5410754 Exec -> Pronto por tempo
+4475 : Processo 5429598 swap in
+4475 : Processo 5429598 HwPF - Pagefile0
+4475 : Processo 5429598 HwPF - Pagefile1
+4475 : Lista de pags livres menor que80%
+4475 : Iniciando Swap
+4475 : Processo 5429486 IO outswapped
+4475 : Processo 5429598 HwPF - Pagefile2
+4475 : Processo 5429598 HwPF - Pagefile3
+4475 : Processo 5429598 HwPF - Pagefile4
+4475 : Processo 5429598 liberando pagefile alocado
+4475 : Processo 5429598 Pronto -> Exec
+4475 : Processo 5429598 Exec -> I/O
+4476 : Processo 5410627 Pronto -> Exec
+4477 : Processo 5410627 Exec -> Pronto por tempo
+4478 : Processo 5410754 Pronto -> Exec
+4479 : Processo 5410754 Exec -> Pronto por tempo
+4480 : Processo 5410627 Pronto -> Exec
+4481 : Processo 5410627 Exec -> Pronto por tempo
+4482 : Processo 5410754 Pronto -> Exec
+4483 : Processo 5410754 Exec -> Pronto por tempo
+4484 : Processo 5410627 Pronto -> Exec
+4485 : Processo 5410627 Exec -> Pronto por tempo
+4486 : Processo 5410754 Pronto -> Exec
+4487 : Processo 5410754 Exec -> Pronto por tempo
+4488 : Processo 5410627 Pronto -> Exec
+4489 : Processo 5410627 Exec -> Pronto por tempo
+4490 : Processo 5410754 Pronto -> Exec
+4491 : Processo 5410754 Exec -> Pronto por tempo
+4492 : Processo 5410627 Pronto -> Exec
+4493 : Processo 5410627 Exec -> Pronto por tempo
+4494 : Processo 5417136 swap in
+4494 : Processo 5417136 HwPF - Pagefile0
+4494 : Processo 5417136 HwPF - Pagefile1
+4494 : Lista de pags livres menor que80%
+4494 : Iniciando Swap
+4494 : Processo 5429598 IO outswapped
+4494 : Processo 5417136 HwPF - Pagefile2
+4494 : Processo 5417136 HwPF - Pagefile3
+4494 : Processo 5417136 HwPF - Pagefile4
+4494 : Processo 5417136 liberando pagefile alocado
+4494 : Processo 5417136 Pronto -> Exec
+4495 : Processo 5417136 Exec -> Pronto por tempo
+4496 : Processo 5417136 Pronto -> Exec
+4496 : Processo 5417136 Exec -> I/O
+4497 : Processo 5410754 Pronto -> Exec
+4498 : Processo 5410754 Exec -> Pronto por tempo
+4499 : Processo 5410627 Pronto -> Exec
+4500 : Processo 5410627 Exec -> Pronto por tempo
+4501 : Processo 5410754 Pronto -> Exec
+4502 : Processo 5410754 Exec -> Pronto por tempo
+4503 : Processo 5410627 Pronto -> Exec
+4504 : Processo 5410627 Exec -> Pronto por tempo
+4505 : Processo 5410754 Pronto -> Exec
+4506 : Processo 5410754 Exec -> Pronto por tempo
+4507 : Processo 5410627 Pronto -> Exec
+4508 : Processo 5410627 Exec -> Pronto por tempo
+4509 : Processo 5410754 Pronto -> Exec
+4510 : Processo 5410754 Exec -> Pronto por tempo
+4511 : Processo 5410627 Pronto -> Exec
+4512 : Processo 5410627 Exec -> Pronto por tempo
+4513 : Processo 5421483 Pronto -> Exec
+4514 : Processo 5421483 Exec -> Pronto por tempo
+4515 : Processo 5421483 Pronto -> Exec
+4515 : Processo 5421483 Exec -> I/O
+4516 : Processo 5410754 Pronto -> Exec
+4517 : Processo 5410754 Exec -> Pronto por tempo
+4518 : Processo 5410627 Pronto -> Exec
+4519 : Processo 5410627 Exec -> Pronto por tempo
+4520 : Processo 5410754 Pronto -> Exec
+4521 : Processo 5410754 Exec -> Pronto por tempo
+4522 : Processo 5410627 Pronto -> Exec
+4523 : Processo 5410627 Exec -> Pronto por tempo
+4524 : Processo 5410754 Pronto -> Exec
+4525 : Processo 5410754 Exec -> Pronto por tempo
+4526 : Processo 5410627 Pronto -> Exec
+4527 : Processo 5410627 Exec -> Pronto por tempo
+4528 : Processo 5410754 Pronto -> Exec

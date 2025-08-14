@@ -41,7 +41,7 @@ int N_TORRE;
 int TEMPO_SIMULACAO;
 #define TEMPO_ALERTA 60
 #define TEMPO_CRITICO 90
-#define FREQUENCIA_DE_AVIAO 2
+#define FREQUENCIA_DE_AVIAO 9
 #define MAX_AVIOES 200
 
 int avioes_domesticos_ativos = 0;
@@ -553,7 +553,8 @@ bool pouso_domestico(void *arg) {
     aviao->status = POUSOU;
     pthread_mutex_unlock(&list_mutex);
 
-    sleep(2);
+    // sleep(2);
+    usleep(300000);
     liberar_recurso(aviao, PISTA);
     liberar_recurso(aviao, TORRE);
 
@@ -574,9 +575,11 @@ bool desembarque_domestico(void *arg) {
     aviao->status = DESEMBARCOU;
     pthread_mutex_unlock(&list_mutex);
 
-    sleep(3);
+    // sleep(3);
+    usleep(300000);
     liberar_recurso(aviao, TORRE);
-    sleep(1);
+    // sleep(1);
+    usleep(300000);
     liberar_recurso(aviao, PORTAO);
 
     return true;
@@ -600,7 +603,8 @@ bool decolagem_domestico(void *arg) {
     aviao->status = DECOLOU;
     pthread_mutex_unlock(&list_mutex);
 
-    sleep(1);
+    // sleep(1);
+    usleep(300000);
     liberar_recurso(aviao, TORRE);
     liberar_recurso(aviao, PORTAO);
     liberar_recurso(aviao, PISTA);
@@ -624,7 +628,8 @@ bool pouso_internacional(void *arg) {
     aviao->status = POUSOU;
     pthread_mutex_unlock(&list_mutex);
 
-    sleep(2);
+    // sleep(2);
+    usleep(300000);
     liberar_recurso(aviao, PISTA);
     liberar_recurso(aviao, TORRE);
 
@@ -645,9 +650,11 @@ bool desembarque_internacional(void *arg) {
     aviao->status = DESEMBARCOU;
     pthread_mutex_unlock(&list_mutex);
 
-    sleep(3);
+    // sleep(3);
+    usleep(300000);
     liberar_recurso(aviao, TORRE);
-    sleep(1);
+    // sleep(1);
+    usleep(300000);
     liberar_recurso(aviao, PORTAO);
 
     return true;
@@ -671,7 +678,8 @@ bool decolagem_internacional(void *arg) {
     aviao->status = DECOLOU;
     pthread_mutex_unlock(&list_mutex);
 
-    sleep(2);
+    // sleep(2);
+    usleep(300000);
     liberar_recurso(aviao, TORRE);
     liberar_recurso(aviao, PISTA);
     liberar_recurso(aviao, PORTAO);
