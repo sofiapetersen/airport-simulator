@@ -70,3 +70,7 @@ Isso iniciará uma simulação com:
 - 5 Portões
 - 2 Operações na Torre de controle
 - Duração de 120 segundos
+
+#
+
+Desenvolvido por João Vitor Laimer e Sofia Petersen
